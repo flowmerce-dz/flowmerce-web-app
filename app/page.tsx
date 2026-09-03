@@ -196,8 +196,8 @@ const FAQ = [
   },
   {
     q: "Un concurrent peut-il signaler mes clients à tort ?",
-    // report-refusal : orderId vérifié + contrainte unique vendorId+orderId.
-    a: "Un marchand ne peut signaler qu’un client qu’il a réellement servi : Flowmerce exige une commande tracée de son côté avant d’accepter le signalement, et un même dossier ne compte qu’une fois. Un vendeur seul ne peut pas dépasser 70 sur 100.",
+    // report-refusal : signalement imputable, quota par vendeur, unique vendorId+orderId.
+    a: "Chaque signalement est imputable au marchand qui l’émet, rattaché à une commande précise, compté une seule fois et plafonné par un quota. Un vendeur seul ne peut pas dépasser 70 sur 100 : sans la confirmation d’autres boutiques, son signalement pèse peu.",
   },
   {
     q: "L’IA peut-elle trancher sans mon accord ?",
