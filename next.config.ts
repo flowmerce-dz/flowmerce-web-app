@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { securityHeaders } from "./lib/security-headers";
 
 const nextConfig: NextConfig = {
   // Build Docker uniquement : produit .next/standalone (serveur Node autonome).
@@ -24,22 +25,16 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // RS-05 — ne pas annoncer le framework (`X-Powered-By: Next.js`).
+  poweredByHeader: false,
+
+  // En-têtes de sécurité (CSP, cache des API, HSTS…) : lib/security-headers.ts.
   async headers() {
-  return [{
-    source: '/(.*)',
-    headers: [
-      { key: 'X-Frame-Options', value: 'DENY' },
-      { key: 'X-Content-Type-Options', value: 'nosniff' },
-      { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-      { key: 'Permissions-Policy', value: 'camera=(), microphone=()' },
-      // HSTS — 2 ans. Volontairement sans `includeSubDomains` ni `preload` :
-      // les deux sont retenus par le navigateur pendant toute la durée du
-      // max-age, donc quasi irréversibles. Les ajouter une fois confirmé
-      // qu'aucun sous-domaine ne sert en clair.
-      { key: 'Strict-Transport-Security', value: 'max-age=63072000' },
-    ],
-  }];
-}
+    return securityHeaders({
+      dev:     process.env.NODE_ENV !== "production",
+      preview: process.env.VERCEL_ENV === "preview",
+    });
+  },
 };
 
 export default nextConfig;

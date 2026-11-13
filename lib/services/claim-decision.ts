@@ -37,6 +37,7 @@ import { checkReturnPolicy } from '@/lib/services/return-policy'
 import { log } from '@/lib/logger'
 import { TYPE_TO_RESOLUTION, VENDOR_DECISIONS, type AIDecision } from '@/lib/constants'
 import type { MLPredictionOutput } from '@/lib/services/ml'
+import { recordDecisionEvent } from '@/lib/services/claim-history'
 
 // Réclamation telle que les deux appelants savent la fournir.
 export interface DecidableClaim {
@@ -332,13 +333,30 @@ export async function applyMLDecision(
   // Transition conditionnelle : n'agit que si la réclamation est encore en
   // attente. C'est la garantie d'idempotence — une reprise qui repasse sur une
   // réclamation déjà tranchée ne la modifie pas et ne renotifie pas.
-  const { count } = await prisma.claim.updateMany({
-    where: { id: claim.id, status: 'PENDING' },
-    data: {
-      status:      targetStatus,
-      processedAt: new Date(),
-      prediction:  { ...mergedPrediction, ...marker } as unknown as Prisma.InputJsonValue,
-    },
+  // L'historique (ClaimDecisionEvent) est écrit dans la même transaction : pas
+  // de décision automatique sans trace.
+  const count = await prisma.$transaction(async (tx) => {
+    const { count } = await tx.claim.updateMany({
+      where: { id: claim.id, status: 'PENDING' },
+      data: {
+        status:      targetStatus,
+        processedAt: new Date(),
+        prediction:  { ...mergedPrediction, ...marker } as unknown as Prisma.InputJsonValue,
+      },
+    })
+    if (count === 1) {
+      await recordDecisionEvent(tx, {
+        claimId:          claim.id,
+        previousStatus:   'PENDING',
+        newStatus:        targetStatus,
+        previousDecision: null,
+        newDecision:      decision,
+        actorType:        'SYSTEM',
+        actor:            autoReject ? 'ml_decision' : 'auto_approve',
+        origin:           'auto_on_create',
+      })
+    }
+    return count
   })
 
   if (count === 0) {

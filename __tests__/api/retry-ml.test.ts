@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 
 const mockPrisma = {
+  $transaction: vi.fn((cb: (tx: unknown) => unknown) => cb(mockPrisma)),
+  claimDecisionEvent: { create: vi.fn() },
   claim: { findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   returnPolicy: { findUnique: vi.fn() },
 }

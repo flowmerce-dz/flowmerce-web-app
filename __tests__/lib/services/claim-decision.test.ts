@@ -8,6 +8,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockPrisma = {
+  // La transition de statut et l'historique partagent une transaction : le
+  // client transactionnel est ici le même faux client.
+  $transaction: vi.fn((cb: (tx: unknown) => unknown) => cb(mockPrisma)),
+  claimDecisionEvent: { create: vi.fn() },
   claim: {
     update:     vi.fn(),
     updateMany: vi.fn(),
@@ -88,6 +92,30 @@ describe('applyMLDecision', () => {
     expect(r.status).toBe('APPROVED')
     expect(r.autoApproved).toBe(true)
     expect(mockNotify).toHaveBeenCalledTimes(1)
+  })
+
+  it('inscrit la décision automatique dans l’historique (audit RS-01)', async () => {
+    const { applyMLDecision } = await import('@/lib/services/claim-decision')
+    await applyMLDecision(claimEnAttente, predictionML('Exchange'), {
+      returnPolicy: policy as never, origin: 'ingestion',
+    })
+
+    expect(mockPrisma.claimDecisionEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        claimId: 'claim-1', previousStatus: 'PENDING', newStatus: 'APPROVED',
+        newDecision: 'Exchange', actorType: 'SYSTEM', origin: 'auto_on_create',
+      }),
+    })
+  })
+
+  it('n’inscrit rien dans l’historique quand la réclamation était déjà tranchée', async () => {
+    mockPrisma.claim.updateMany.mockResolvedValueOnce({ count: 0 })
+    const { applyMLDecision } = await import('@/lib/services/claim-decision')
+    await applyMLDecision(claimEnAttente, predictionML('Exchange'), {
+      returnPolicy: policy as never, origin: 'ingestion',
+    })
+
+    expect(mockPrisma.claimDecisionEvent.create).not.toHaveBeenCalled()
   })
 
   it('laisse PENDING en mode MANUAL, sans notification', async () => {

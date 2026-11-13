@@ -314,6 +314,22 @@ export async function ingestClaim(input: IngestClaimInput): Promise<IngestClaimR
           // Un refus hors politique vient d'une règle métier déterministe, pas
           // du modèle : c'est un label exploitable à l'entraînement (C-04).
           resolutionSource: policyViolation ? 'POLICY_RULE' : null,
+          // Refus d'office : la décision est prise à la création, elle entre
+          // dans l'historique avec la règle qui l'a motivée.
+          ...(policyViolation && {
+            decisionEvents: {
+              create: {
+                previousStatus:   null,
+                newStatus:        'REJECTED',
+                previousDecision: null,
+                newDecision:      'Reject',
+                actorType:        'SYSTEM',
+                actor:            `policy:${policyViolation.code}`,
+                origin:           'policy',
+                reason:           policyViolation.message,
+              },
+            },
+          }),
           prediction:    (policyViolation
             ? { ...predictionData, policyViolation }
             : predictionData) as unknown as Prisma.InputJsonValue,

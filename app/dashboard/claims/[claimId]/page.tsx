@@ -6,8 +6,11 @@ import Link                   from 'next/link'
 import { checkVendorAccess }  from '@/lib/vendorGuard'
 import { ClaimActions }       from '@/components/claims/ClaimActions'
 import { formatClaimType, formatDate } from '@/lib/utils'
-import { formatCustomerGender, formatReturnReasonDetail } from '@/lib/constants'
-import { ArrowLeft, Brain, Sparkles, AlertTriangle, User, Package, FileText, ShieldAlert } from 'lucide-react'
+import {
+  CLAIM_STATUS_LABELS, VENDOR_DECISION_LABELS, formatCustomerGender, formatReturnReasonDetail,
+  type ClaimStatusValue, type VendorDecision,
+} from '@/lib/constants'
+import { ArrowLeft, Brain, Sparkles, AlertTriangle, User, Package, FileText, ShieldAlert, History } from 'lucide-react'
 
 export default async function ClaimDetailPage({
   params,
@@ -31,7 +34,10 @@ export default async function ClaimDetailPage({
 
   const claim = await prisma.claim.findUnique({
     where: { id: claimId },
-    include: { vendor: { select: { companyName: true } } },
+    include: {
+      vendor:         { select: { companyName: true } },
+      decisionEvents: { orderBy: { createdAt: 'asc' } },
+    },
   })
 
   if (!claim) notFound()
@@ -433,7 +439,63 @@ export default async function ClaimDetailPage({
           </div>
         )}
 
+        {/* ── Historique des décisions (en ajout seul, audit RS-01) ── */}
+        {claim.decisionEvents.length > 0 && (
+          <div className="bg-white rounded-lg border border-gray-200 p-5 md:col-span-2">
+            <div className="flex items-center gap-2 mb-4">
+              <History className="w-4 h-4 text-gray-400" />
+              <h2 className="text-sm font-semibold text-gray-700">Historique des décisions</h2>
+            </div>
+            <ol className="space-y-3">
+              {claim.decisionEvents.map(event => (
+                <li key={event.id} className="border-l-2 border-gray-200 pl-3">
+                  <p className="text-sm text-gray-700">
+                    {event.previousStatus
+                      ? <>{statusLabel(event.previousStatus)} → </>
+                      : null}
+                    <span className="font-semibold">{statusLabel(event.newStatus)}</span>
+                    {event.newDecision && (
+                      <span className="text-gray-500"> · {decisionLabel(event.newDecision)}</span>
+                    )}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {event.createdAt.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}
+                    {' · '}
+                    {actorLabel(event.actorType, event.actor, event.origin)}
+                  </p>
+                  {event.reason && (
+                    <p className="text-xs text-gray-600 italic mt-1">{event.reason}</p>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
       </div>
     </div>
   )
+}
+
+function statusLabel(status: string): string {
+  return CLAIM_STATUS_LABELS[status as ClaimStatusValue] ?? status
+}
+
+function decisionLabel(decision: string): string {
+  return VENDOR_DECISION_LABELS[decision as VendorDecision] ?? decision
+}
+
+const ORIGIN_LABELS: Record<string, string> = {
+  auto_on_create:  'décision automatique à la réception',
+  validation_mode: 'validation automatique activée',
+  policy:          'hors politique de retour',
+  dashboard:       'tableau de bord',
+  admin_amendment: 'correction de décision',
+}
+
+function actorLabel(actorType: string, actor: string, origin: string): string {
+  const where = ORIGIN_LABELS[origin] ?? origin
+  if (actorType === 'SYSTEM') return `Flowmerce, ${where}`
+  if (actorType === 'ADMIN')  return `Administrateur (${actor}), ${where}`
+  return `${actor}, ${where}`
 }
