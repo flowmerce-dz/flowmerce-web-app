@@ -6,7 +6,7 @@ import Link                   from 'next/link'
 import { checkVendorAccess }  from '@/lib/vendorGuard'
 import { ClaimActions }       from '@/components/claims/ClaimActions'
 import { formatClaimType, formatDate } from '@/lib/utils'
-import { formatCustomerGender }        from '@/lib/constants'
+import { formatCustomerGender, formatReturnReasonDetail } from '@/lib/constants'
 import { ArrowLeft, Brain, Sparkles, AlertTriangle, User, Package, FileText, ShieldAlert } from 'lucide-react'
 
 export default async function ClaimDetailPage({
@@ -65,6 +65,16 @@ export default async function ClaimDetailPage({
   const refundEligible = prediction?.refundEligible === true
   const confidence   = claim.aiScore != null ? Math.round(claim.aiScore * 100) : null
   const fraudScore   = claim.fraudScore
+
+  // Trace de l'ajustement (claim-ingestion) : seuls les montants sont lus —
+  // le détail des retours neutralisés reste interne.
+  const adj = claim.fraudAdjustment as
+    { rawScore?: unknown; adjustedScore?: unknown; discount?: unknown } | null
+  const fraudAdjustment =
+    adj && typeof adj.rawScore === 'number' && typeof adj.adjustedScore === 'number'
+      && typeof adj.discount === 'number'
+      ? { rawScore: adj.rawScore, adjustedScore: adj.adjustedScore, discount: adj.discount }
+      : null
 
   // Arbitrage recommandation / résolutions autorisées, calculé côté serveur
   // (claim-decision). Le modèle a pu noter au plus haut une résolution que ce
@@ -248,6 +258,38 @@ export default async function ClaimDetailPage({
           </div>
         </div>
 
+        {/* ── Motif du retour ── */}
+        {claim.returnReason && (
+          <div className="bg-white rounded-lg border border-gray-200 p-5 md:col-span-2">
+            <div className="flex items-center gap-2 mb-4">
+              <FileText className="w-4 h-4 text-gray-400" />
+              <h2 className="text-sm font-semibold text-gray-700">Motif du retour</h2>
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <p className="text-xs text-gray-400">Motif</p>
+                <p className="text-sm font-semibold text-gray-900">{claim.returnReason}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400">Précision</p>
+                <p className="text-sm text-gray-700">
+                  {formatReturnReasonDetail(claim.returnReasonDetail) ?? (
+                    <span className="text-gray-400">Non renseignée</span>
+                  )}
+                </p>
+              </div>
+              {claim.returnReasonComment && (
+                <div className="sm:col-span-2">
+                  <p className="text-xs text-gray-400">Commentaire du client</p>
+                  <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                    {claim.returnReasonComment}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ── Description ── */}
         <div className="bg-white rounded-lg border border-gray-200 p-5 md:col-span-2">
           <div className="flex items-center gap-2 mb-4">
@@ -368,6 +410,13 @@ export default async function ClaimDetailPage({
                   <span className="text-sm font-medium text-gray-700">{Math.round(fraudScore)}</span>
                 </div>
               </div>
+              {fraudAdjustment && (
+                <p className="text-xs text-gray-600 bg-gray-50 px-3 py-2 rounded-lg leading-relaxed">
+                  Score ajusté de {Math.round(fraudAdjustment.rawScore)} à {Math.round(fraudAdjustment.adjustedScore)} :{' '}
+                  {fraudAdjustment.discount.toLocaleString('fr-FR')} retour(s) précédent(s) de ce client
+                  s’expliquent par un problème récurrent sur un produit, signalé par plusieurs clients.
+                </p>
+              )}
               {fraudScore >= 60 && (
                 <div className="flex items-center gap-1.5 text-xs text-red-600 bg-red-50 px-3 py-2 rounded-lg">
                   <AlertTriangle className="w-3.5 h-3.5" />

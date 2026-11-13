@@ -32,6 +32,129 @@ export const RETURN_REASON_DESCRIPTIONS: Record<ReturnReason, string> = {
   'Pièces manquantes':           'Des éléments manquent dans le colis',
 }
 
+// ── Sous-raisons des motifs de retour ────────────────────────────────────────
+// Données ADDITIONNELLES, indépendantes des motifs ci-dessus : elles précisent
+// un motif sans jamais le remplacer. `RETURN_REASONS` reste la source de vérité
+// du motif principal, et c'est lui seul qui part au modèle ML (Return_Reason) —
+// la sous-raison n'entre ni dans le payload ML ni dans `mlInput` (le schéma
+// /predict de Flowmerce-ML refuse tout champ inconnu : extra="forbid").
+//
+// `code` : identifiant technique stable, unique tous motifs confondus. C'est
+// lui qui est transmis (`reason_detail`) et stocké (`Claim.returnReasonDetail`).
+// Ne jamais renommer un code existant : il vit dans l'historique des retours.
+//
+// `productRelated` : la sous-raison décrit un problème du produit ou de son
+// expédition par la boutique, et non une décision du client. Seules ces
+// sous-raisons peuvent révéler un problème collectif sur un produit — et donc
+// neutraliser leur effet sur le score de fraude des clients concernés
+// (lib/services/product-issues.ts). « Changement d'avis » et les « Autre »,
+// trop vagues pour désigner un défaut précis, ne le sont jamais.
+export interface ReturnReasonDetail {
+  code:           string
+  label:          string
+  productRelated: boolean
+  isOther:        boolean
+}
+
+const detail = (code: string, label: string, productRelated = true): ReturnReasonDetail =>
+  ({ code, label, productRelated, isOther: false })
+const other = (code: string): ReturnReasonDetail =>
+  ({ code, label: 'Autre', productRelated: false, isOther: true })
+
+export const RETURN_REASON_DETAILS: Record<ReturnReason, readonly ReturnReasonDetail[]> = {
+  'Produit défectueux': [
+    detail('NOT_WORKING',          'Ne fonctionne pas'),
+    detail('BROKEN_OR_DAMAGED',    'Cassé ou endommagé'),
+    detail('MANUFACTURING_DEFECT', 'Défaut de fabrication'),
+    other('OTHER_DEFECTIVE'),
+  ],
+  'Produit contrefait': [
+    detail('FAKE_BRAND_LOGO',       'Logo ou marque non authentique'),
+    detail('SUSPICIOUS_PACKAGING',  'Emballage ou étiquetage suspect'),
+    detail('NOT_MATCHING_ORIGINAL', 'Produit ne correspondant pas à l’original'),
+    other('OTHER_COUNTERFEIT'),
+  ],
+  'Produit endommagé livraison': [
+    detail('BROKEN_IN_TRANSIT',    'Produit cassé pendant le transport'),
+    detail('SCRATCHED_OR_DAMAGED', 'Produit rayé ou abîmé'),
+    detail('PACKAGE_DAMAGED',      'Colis endommagé'),
+    other('OTHER_SHIPPING_DAMAGE'),
+  ],
+  "Changement d'avis": [
+    detail('NO_LONGER_WANTED',   'N’en veut plus',                    false),
+    detail('ORDERED_BY_MISTAKE', 'Commandé par erreur',               false),
+    detail('NOT_AS_EXPECTED',    'Ne correspond pas à ses attentes',  false),
+    other('OTHER_CHANGE_OF_MIND'),
+  ],
+  'Panne après utilisation': [
+    detail('STOPPED_WORKING',      'Ne fonctionne plus après utilisation'),
+    detail('INTERMITTENT_FAILURE', 'Fonctionnement intermittent'),
+    detail('BATTERY_OR_POWER',     'Problème de batterie ou d’alimentation'),
+    other('OTHER_FAILURE'),
+  ],
+  'Mauvaise taille': [
+    detail('TOO_SMALL',           'Trop petit'),
+    detail('TOO_LARGE',           'Trop grand'),
+    detail('SIZE_GUIDE_MISMATCH', 'Ne correspond pas au guide des tailles'),
+    other('OTHER_SIZE'),
+  ],
+  'Allergie/Réaction': [
+    detail('SKIN_IRRITATION',               'Irritation de la peau'),
+    detail('ALLERGIC_REACTION',             'Réaction allergique'),
+    detail('RESPIRATORY_OR_OTHER_REACTION', 'Réaction respiratoire ou autre réaction'),
+    other('OTHER_REACTION'),
+  ],
+  'Ne correspond pas': [
+    detail('WRONG_COLOR',            'Mauvaise couleur'),
+    detail('WRONG_MODEL',            'Mauvais modèle'),
+    detail('DIFFERENT_FROM_LISTING', 'Différent des photos ou de la description'),
+    other('OTHER_MISMATCH'),
+  ],
+  'Erreur de commande vendeur': [
+    detail('WRONG_PRODUCT_SENT',  'Mauvais produit envoyé'),
+    detail('WRONG_VARIANT_SENT',  'Mauvaise variante envoyée'),
+    detail('WRONG_QUANTITY_SENT', 'Mauvaise quantité envoyée'),
+    other('OTHER_VENDOR_ERROR'),
+  ],
+  'Pièces manquantes': [
+    detail('MISSING_ACCESSORY', 'Accessoire manquant'),
+    detail('MISSING_COMPONENT', 'Composant ou pièce manquante'),
+    detail('MISSING_MANUAL',    'Manuel ou document manquant'),
+    other('OTHER_MISSING_PART'),
+  ],
+}
+
+// Index code → (motif, sous-raison), matérialisé une fois au chargement.
+const REASON_DETAIL_INDEX: ReadonlyMap<string, { reason: ReturnReason; detail: ReturnReasonDetail }> =
+  new Map(
+    RETURN_REASONS.flatMap(reason =>
+      RETURN_REASON_DETAILS[reason].map(d => [d.code, { reason, detail: d }] as const),
+    ),
+  )
+
+export function isReturnReason(value: unknown): value is ReturnReason {
+  return typeof value === 'string' && (RETURN_REASONS as readonly string[]).includes(value)
+}
+
+/** Motif et définition d'une sous-raison à partir de son code, ou null. */
+export function findReturnReasonDetail(
+  code: string | null | undefined,
+): { reason: ReturnReason; detail: ReturnReasonDetail } | null {
+  if (!code) return null
+  return REASON_DETAIL_INDEX.get(code) ?? null
+}
+
+/** Vrai si `code` est une sous-raison du motif `reason`. */
+export function isReasonDetailOf(reason: string, code: string): boolean {
+  return findReturnReasonDetail(code)?.reason === reason
+}
+
+/** Libellé d'affichage d'une sous-raison ; le code brut s'il est inconnu. */
+export function formatReturnReasonDetail(code: string | null | undefined): string | null {
+  if (!code) return null
+  return findReturnReasonDetail(code)?.detail.label ?? code
+}
+
 // ── Raisons externes (anglais — API partenaires) ──────────────────────────────
 export const EXTERNAL_RETURN_REASONS = [
   'DEFECTIVE', 'WRONG_ITEM', 'DESCRIPTION', 'CHANGE_MIND',

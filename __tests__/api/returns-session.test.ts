@@ -83,6 +83,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
 // identifiant client viennent de la session.
 const CLIENT_ANSWERS = {
   reason:             'Produit défectueux',
+  reason_detail:      'NOT_WORKING',
   desired_resolution: 'REFUND',
   description:        'Semelle décollée à la réception.',
 }
@@ -158,7 +159,7 @@ describe('POST /api/v1/returns — jeton de session', () => {
     }))
 
     const res = await callPost(
-      { answers: { reason: 'Produit défectueux', desired_resolution: 'REFUND' } },
+      { answers: { reason: 'Produit défectueux', reason_detail:      'NOT_WORKING', desired_resolution: 'REFUND' } },
       withToken(),
     )
 

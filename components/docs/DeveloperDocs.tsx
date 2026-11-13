@@ -185,6 +185,7 @@ curl -X POST https://flowmerce.app/api/v1/returns \\
       "product_name":       "Nike Air Max",
       "payment_method":     "Cash on Delivery",
       "reason":             "Produit défectueux",
+      "reason_detail":      "NOT_WORKING",
       "desired_resolution": "REFUND",
       "description":        "Défaut visible sur la semelle à la réception.",
       "data_consent":       true
@@ -213,6 +214,7 @@ const res = await fetch("https://flowmerce.app/api/v1/returns", {
       product_name:       "Nike Air Max",
       payment_method:     "Cash on Delivery",
       reason:             "Produit défectueux",   // option du formulaire
+      reason_detail:      "NOT_WORKING",          // sous-raison de ce motif (options.parent)
       desired_resolution: "REFUND",               // EXCHANGE | REFUND | REPAIR
       description:        "Produit reçu défectueux.",
       data_consent:       true,                   // case cochée par le client
@@ -247,6 +249,7 @@ response = requests.post(
             "product_name":       "Nike Air Max",
             "payment_method":     "Cash on Delivery",
             "reason":             "Produit défectueux",
+            "reason_detail":      "NOT_WORKING",
             "desired_resolution": "REFUND",
             "description":        "Produit reçu défectueux.",
             "data_consent":       True,
@@ -274,6 +277,7 @@ $response = \\Illuminate\\Support\\Facades\\Http::withHeaders([
         'product_name'       => 'Nike Air Max',
         'payment_method'     => 'Cash on Delivery',
         'reason'             => 'Produit défectueux',
+        'reason_detail'      => 'NOT_WORKING',
         'desired_resolution' => 'REFUND',
         'description'        => 'Produit reçu défectueux.',
         'data_consent'       => true,
@@ -584,7 +588,7 @@ x-api-key: flk_votre_cle_api`}
                 <CodeBlock
                   lang="JSON"
                   code={`{
-  "version": 2,
+  "version": 3,
   "min_compatible_version": 1,
   "sections":        [ /* à AFFICHER au client */ ],
   "merchant_fields": [ /* à FOURNIR depuis vos données de commande */ ]
@@ -709,6 +713,8 @@ if (![1].includes(form.version)) {
                         <FieldRow name="customer_email"     type="string" required desc="Email du client (format vérifié)" />
                         <FieldRow name="product_name"       type="string" required desc="Nom du produit concerné" />
                         <FieldRow name="reason"             type="enum"   required desc="Motif de retour — une des options du formulaire (ex: Produit défectueux)" />
+                        <FieldRow name="reason_detail"      type="enum"   required desc="Sous-raison du motif — une option de reason_detail dont parent vaut le reason choisi (ex: NOT_WORKING). Voir ci-dessous." />
+                        <FieldRow name="reason_comment"     type="string" desc="Précision libre du client, 1000 caractères max. Facultative — recommandée quand la sous-raison est « Autre » (option is_other)." />
                         <FieldRow name="desired_resolution" type="enum"   required desc="EXCHANGE | REFUND | REPAIR (choix du client, filtré par votre policy)" />
                         <FieldRow name="data_consent"       type="boolean" required desc="true — accord explicite du client sur l'usage de ses données (section « consent » du formulaire). Voir ci-dessous." />
                       </tbody>
@@ -748,6 +754,55 @@ if (![1].includes(form.version)) {
                       <code className="font-mono text-xs bg-white/60 px-1 py-0.5 rounded">CONSENT_REQUIRED</code>.
                       Cochez-le après acceptation réelle du client : le pré-cocher, ou l&apos;envoyer en
                       dur, n&apos;est pas un consentement.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Sous-raison — rupture de contrat (v3), elle aussi */}
+                <div className="p-6 space-y-4">
+                  <h4 className="text-sm font-semibold text-ink">
+                    Sous-raison du motif{' '}
+                    <span className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-800">
+                      formulaire v3
+                    </span>
+                  </h4>
+                  <p className="text-sm text-body">
+                    La section <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">reason</code>{' '}
+                    contient désormais, après le motif, un champ obligatoire{' '}
+                    <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">reason_detail</code>{' '}
+                    (« Précisez la raison ») et un champ facultatif{' '}
+                    <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">reason_comment</code>.
+                    Le motif <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">reason</code>{' '}
+                    garde exactement ses valeurs : rien ne change pour lui.
+                  </p>
+                  <p className="text-sm text-body">
+                    <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">reason_detail</code> porte{' '}
+                    <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">depends_on: &quot;reason&quot;</code>, et
+                    chacune de ses options un <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">parent</code> :
+                    la valeur du motif à laquelle elle appartient. Pour un rendu correct :
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5 text-sm text-body">
+                    <li>
+                      n&apos;afficher que les options dont{' '}
+                      <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">parent</code> égale le motif choisi,
+                      et aucune tant qu&apos;aucun motif n&apos;est choisi ;
+                    </li>
+                    <li>vider la sous-raison quand le client change de motif ;</li>
+                    <li>
+                      mettre en avant <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">reason_comment</code>{' '}
+                      quand l&apos;option choisie porte{' '}
+                      <code className="font-mono text-xs bg-page px-1 py-0.5 rounded">is_other: true</code> (« Autre »).
+                    </li>
+                  </ul>
+                  <div className="rounded-control border border-amber-200 bg-amber-50 px-4 py-3">
+                    <p className="text-sm text-amber-800">
+                      <strong className="font-semibold">Changement bloquant.</strong> Une soumission sans{' '}
+                      <code className="font-mono text-xs bg-white/60 px-1 py-0.5 rounded">reason_detail</code>, ou avec une
+                      sous-raison qui n&apos;appartient pas au motif envoyé, est refusée avec un{' '}
+                      <code className="font-mono text-xs bg-white/60 px-1 py-0.5 rounded">400</code>. Un moteur qui ignore{' '}
+                      <code className="font-mono text-xs bg-white/60 px-1 py-0.5 rounded">depends_on</code> affiche toutes
+                      les sous-raisons à la fois : le formulaire reste utilisable, mais le client peut alors
+                      choisir une combinaison refusée.
                     </p>
                   </div>
                 </div>
@@ -877,6 +932,7 @@ if (![1].includes(form.version)) {
                     <tbody>
                       <ErrorRow status={400} code="VALIDATION"   when="Champ requis manquant, email invalide, HTML détecté, raison/résolution non reconnue" action="Corriger le payload côté votre backend" />
                       <ErrorRow status={400} code="CONSENT_REQUIRED" when="answers.data_consent absent ou différent de true" action="Afficher la section « consent » du formulaire et transmettre la case cochée par le client" />
+                      <ErrorRow status={400} code="VALIDATION" when="answers.reason_detail absent, inconnu, ou rattaché à un autre motif que answers.reason" action="Filtrer les options de reason_detail par parent, et vider la sous-raison quand le motif change" />
                       <ErrorRow status={401} code="AUTH"         when="Clé API invalide, désactivée, ou vendor non APPROVED" action="Vérifier la clé dans /dashboard/api-keys" />
                       <ErrorRow status={409} code="DUPLICATE"    when="Un claim existe déjà pour (vendorId, order_id)" action='Afficher "un retour existe déjà" au client' />
                       <ErrorRow status={422} code="DELAY_EXCEEDED" when="Délai de retour dépassé (selon return policy vendor)" action="Afficher la raison au client (champ `extra.policy_days`)" />

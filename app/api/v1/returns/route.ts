@@ -55,7 +55,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Champ answers invalide' }, { status: 400 })
     }
 
-    ctx.prefill.orderId = orderId
+    ctx.prefill.orderId   = orderId
+    // Conservé sur la réclamation : c'est la clé de regroupement des analyses
+    // de retours produits, plus fiable que le nom saisi.
+    ctx.prefill.productId = productId
   }
 
   return submitReturn({ ctx, body, ip: clientIp(req) })

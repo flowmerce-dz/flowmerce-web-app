@@ -21,6 +21,7 @@ import {
   PAYMENT_METHOD_LABELS,
   RETURN_REASONS,
   RETURN_REASON_DESCRIPTIONS,
+  RETURN_REASON_DETAILS,
 } from '@/lib/constants'
 
 // ─────────────────────────────────────────────────────────────
@@ -52,8 +53,17 @@ import {
 // ses champs en dur au lieu de boucler sur `sections` verra ses envois refusés
 // tant qu'elle ne le transmet pas. C'est précisément ce qu'un incrément de
 // `version` signale à l'intégrateur.
+//
+// v3 — sous-raison du motif (`reason_detail`, obligatoire) et précision libre
+// (`reason_comment`, facultative). Même nature que v2 : additif au rendu — un
+// moteur v1 affiche un select ordinaire, avec toutes les sous-raisons —, mais
+// exigé à la soumission. `reason_detail` est un champ DÉPENDANT : il porte
+// `depends_on: "reason"`, et chacune de ses options un `parent` (la valeur de
+// `reason` à laquelle elle appartient). Un moteur à jour n'affiche que les
+// options dont `parent` vaut le motif choisi, et vide la sous-raison quand le
+// motif change. Le serveur refuse toute sous-raison étrangère au motif.
 // ─────────────────────────────────────────────────────────────
-export const RETURN_FORM_VERSION = 2
+export const RETURN_FORM_VERSION = 3
 export const RETURN_FORM_MIN_COMPATIBLE_VERSION = 1
 
 // Consentement du client final au traitement de ses données. Exporté parce que
@@ -61,6 +71,14 @@ export const RETURN_FORM_MIN_COMPATIBLE_VERSION = 1
 // le retire de son rendu générique — elle affiche son propre bloc, plus
 // explicite — et les tests. Aucun d'eux ne doit le coder en dur.
 export const CONSENT_FIELD_ID = 'data_consent'
+
+// Champs du motif de retour. `reason` porte la valeur exacte du motif principal
+// (RETURN_REASONS, vocabulaire du modèle ML) ; les deux autres sont des données
+// distinctes, stockées à part et jamais envoyées au ML.
+export const REASON_FIELD_ID         = 'reason'
+export const REASON_DETAIL_FIELD_ID  = 'reason_detail'
+export const REASON_COMMENT_FIELD_ID = 'reason_comment'
+export const REASON_COMMENT_MAX_LENGTH = 1000
 
 // Qui renseigne la valeur d'un champ :
 //   'customer' → saisi par le client final dans le formulaire ;
@@ -85,6 +103,13 @@ export interface ReturnFormOption {
   value: string
   label: string
   description?: string
+  /**
+   * Champ dépendant uniquement : valeur du champ parent (`depends_on`) à
+   * laquelle l'option appartient. Ne l'afficher que si le parent la porte.
+   */
+  parent?: string
+  /** Option « Autre » : le moteur peut alors mettre en avant la précision libre. */
+  is_other?: boolean
 }
 
 export interface ReturnFormField {
@@ -93,6 +118,18 @@ export interface ReturnFormField {
   label: string
   source: ReturnFormFieldSource
   required: boolean
+  /**
+   * Id du champ dont dépend celui-ci. Ses options portent un `parent` : seules
+   * celles dont `parent` égale la valeur courante du champ parent sont
+   * valables. Absent sur un champ indépendant.
+   */
+  depends_on?: string
+  /**
+   * Id d'un champ select : quand l'option choisie y est une option « Autre »
+   * (`is_other`), ce champ facultatif devient la seule précision utile — le
+   * moteur peut le mettre en avant. Purement indicatif, jamais exigé.
+   */
+  emphasized_by?: string
   placeholder?: string
   defaultValue?: string | number | boolean | null
   options: ReturnFormOption[]
@@ -211,13 +248,25 @@ export function buildReturnForm(vendor: VendorInput, policy: PolicyInput): Retur
     : CLAIM_TYPES
   const acceptedReasons = policy?.acceptedReturnReasons ?? []
 
-  const reasonOptions: ReturnFormOption[] = RETURN_REASONS
+  const allowedReasons = RETURN_REASONS
     .filter(r => acceptedReasons.length === 0 || acceptedReasons.includes(r))
-    .map(r => ({
-      value:       r,
-      label:       r,
-      description: RETURN_REASON_DESCRIPTIONS[r],
-    }))
+
+  const reasonOptions: ReturnFormOption[] = allowedReasons.map(r => ({
+    value:       r,
+    label:       r,
+    description: RETURN_REASON_DESCRIPTIONS[r],
+  }))
+
+  // Sous-raisons des seuls motifs proposés : la politique du vendeur filtre les
+  // motifs, et donc, par construction, leurs sous-raisons.
+  const reasonDetailOptions: ReturnFormOption[] = allowedReasons.flatMap(r =>
+    RETURN_REASON_DETAILS[r].map(d => ({
+      value:  d.code,
+      label:  d.label,
+      parent: r,
+      ...(d.isOther ? { is_other: true } : {}),
+    })),
+  )
 
   const resolutionOptions: ReturnFormOption[] = CLAIM_TYPES
     .filter(t => acceptedTypes.includes(t))
@@ -256,13 +305,32 @@ export function buildReturnForm(vendor: VendorInput, policy: PolicyInput): Retur
         title: 'Motif du retour',
         fields: [
           field({
-            id: 'reason',
+            id: REASON_FIELD_ID,
             type: 'select',
             label: 'Motif du retour',
             required: true,
             placeholder: 'Sélectionnez un motif…',
             options: reasonOptions,
             validation: { minLength: 1 },
+          }),
+          field({
+            id: REASON_DETAIL_FIELD_ID,
+            type: 'select',
+            label: 'Précisez la raison',
+            required: true,
+            depends_on: REASON_FIELD_ID,
+            placeholder: 'Sélectionnez d’abord un motif…',
+            options: reasonDetailOptions,
+            validation: { minLength: 1 },
+          }),
+          field({
+            id: REASON_COMMENT_FIELD_ID,
+            type: 'textarea',
+            label: 'Précision complémentaire',
+            required: false,
+            emphasized_by: REASON_DETAIL_FIELD_ID,
+            placeholder: 'Ajoutez une précision si nécessaire (facultatif)…',
+            validation: { maxLength: REASON_COMMENT_MAX_LENGTH },
           }),
         ],
       },

@@ -26,7 +26,15 @@
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { checkRateLimit }            from '@/lib/rate-limit'
-import { buildReturnForm, merchantFieldIds, CONSENT_FIELD_ID } from '@/lib/services/return-form-builder'
+import {
+  buildReturnForm,
+  merchantFieldIds,
+  CONSENT_FIELD_ID,
+  REASON_FIELD_ID,
+  REASON_DETAIL_FIELD_ID,
+  REASON_COMMENT_FIELD_ID,
+}                                    from '@/lib/services/return-form-builder'
+import { isReasonDetailOf, isReturnReason } from '@/lib/constants'
 import {
   isPresent,
   validateReturnFormAnswers,
@@ -66,6 +74,8 @@ export interface SubmissionPrefill {
   shippingMethod?:  string | null
   shippingCost?:    number | null
   productName?:     string | null
+  /** Identifiant produit de la boutique (API v1), clé des analyses produit. */
+  productId?:       string | null
   productPrice?:    number | null
   productQuantity?: number | null
   orderTotal?:      number | null
@@ -256,7 +266,11 @@ export async function submitReturn({ ctx, body, ip }: SubmitReturnInput): Promis
   const customerEmail = str('customer_email').toLowerCase()
   const customerPhone = str('customer_phone') || str('customer_telephone') || null
   const productName   = str('product_name')
-  const reason        = str('reason')
+  // Motif : trois données distinctes. `reason` garde exactement la valeur de
+  // RETURN_REASONS — c'est elle, et elle seule, qui part au ML.
+  const reason        = str(REASON_FIELD_ID)
+  const reasonDetail  = str(REASON_DETAIL_FIELD_ID)
+  const reasonComment = str(REASON_COMMENT_FIELD_ID) || null
   const description   = str('description')
   const productCategory = str('product_category') || null
   const orderAddress    = str('order_address')    || null
@@ -287,9 +301,22 @@ export async function submitReturn({ ctx, body, ip }: SubmitReturnInput): Promis
   // ── 5. Garde-fous sur les valeurs hors formulaire ────────────────────────
   // Ils couvrent ce que la validation du formulaire ne voit pas : champs
   // pré-remplis par le serveur et champs libres absents de la définition.
-  if (!customerEmail || !orderId || !productName || !reason || !desiredResolution) {
+  if (!customerEmail || !orderId || !productName || !reason || !reasonDetail || !desiredResolution) {
     return NextResponse.json(
-      { error: 'Champs requis : customer_email, order_id, product_name, reason, desired_resolution' },
+      { error: 'Champs requis : customer_email, order_id, product_name, reason, reason_detail, desired_resolution' },
+      { status: 400 },
+    )
+  }
+  // Défense en profondeur : la validation du formulaire a déjà vérifié que le
+  // motif est une option autorisée par la politique et que la sous-raison lui
+  // appartient. Ce contrôle ne dépend pas de la définition du formulaire : une
+  // combinaison incohérente ne peut pas atteindre la base, quoi qu'il arrive.
+  if (!isReturnReason(reason) || !isReasonDetailOf(reason, reasonDetail)) {
+    return NextResponse.json(
+      {
+        error: `Sous-raison invalide : « ${reasonDetail} » n'appartient pas au motif « ${reason} »`,
+        code:  'REASON_DETAIL_MISMATCH',
+      },
       { status: 400 },
     )
   }
@@ -407,7 +434,11 @@ export async function submitReturn({ ctx, body, ip }: SubmitReturnInput): Promis
     customerEmail,
     customerPhone,
     productName,
+    productId:     ctx.prefill.productId ?? null,
     description:   fullDescription,
+    returnReason:        reason,
+    returnReasonDetail:  reasonDetail,
+    returnReasonComment: reasonComment,
     type:          desiredResolution as 'EXCHANGE' | 'REFUND' | 'REPAIR',
     source:        ctx.source,
     ipAddress:     ip,
@@ -452,6 +483,7 @@ export async function submitReturn({ ctx, body, ip }: SubmitReturnInput): Promis
     vendorId:            ctx.vendorId,
     orderId,
     reason,
+    reasonDetail,
     desiredResolution,
     customerPastReturns: result.customerPastReturns,
     fraudScore:          result.claim.fraudScore,

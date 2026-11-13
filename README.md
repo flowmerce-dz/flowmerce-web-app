@@ -16,6 +16,8 @@ Plateforme SaaS B2B de gestion des retours et détection de fraude pour e-commer
 - **Panel admin** — Approbation des vendeurs, revue des documents, vue par client, export du dataset ML
 - **Notifications email** — Alertes automatiques (soumission, approbation, rejet)
 - **Garde-fou remboursement** — Les demandes de remboursement ne sont jamais auto-approuvées : elles restent soumises à une validation vendeur explicite
+- **Sous-raisons des motifs** — Après le motif principal, le client précise la raison parmi les seules sous-raisons de ce motif (`reason_detail`), avec un commentaire facultatif (`reason_comment`). Les 10 motifs principaux et la valeur envoyée au ML (`Return_Reason`) sont inchangés
+- **Analyse des retours produits** — Rubrique « Analyses et statistiques » du vendeur : produits les plus retournés, motifs et sous-raisons, clients distincts, évolution mensuelle, problèmes récurrents et recommandations. Un retour expliqué par un problème collectif sur un produit ne pénalise pas le score de fraude du client
 
 ---
 
@@ -509,6 +511,8 @@ Les évolutions **additives** ne changent pas `version` : nouvelle propriété s
 > **Historique.** Le contrat est resté en `v1` de l'origine jusqu'à l'ajout de la section `consent`. L'ajout de `field.source` et le passage de `shipping_method` en optionnel avaient brièvement fait passer `version` à `2` ; ces deux évolutions étant additives, l'incrément n'était pas justifié et a été annulé.
 >
 > **`v2` — section `consent`.** Le formulaire porte désormais une case à cocher obligatoire `data_consent`, par laquelle le client final accepte l'usage de ses données. L'ajout est additif au **rendu** (un moteur `v1` sait afficher une case à cocher, d'où un `min_compatible_version` inchangé) mais pas à la **soumission** : `POST /api/v1/returns` refuse un envoi sans `data_consent: true` avec un `400 CONSENT_REQUIRED`. Une intégration qui boucle sur `sections` n'a rien à faire ; une intégration qui code ses champs en dur doit transmettre le champ.
+
+> **`v3` — sous-raison du motif.** La section `reason` contient `reason` (inchangé), puis `reason_detail` (obligatoire) et `reason_comment` (facultatif, 1000 caractères). `reason_detail` porte `depends_on: "reason"` et chacune de ses options un `parent` : un moteur à jour n'affiche que les options du motif choisi et vide la sous-raison quand le motif change ; `reason_comment` porte `emphasized_by: "reason_detail"`, pour être mis en avant quand l'option choisie a `is_other: true`. Même nature que `v2` : rendable par un moteur `v1` (un select ordinaire, avec toutes les sous-raisons), mais **exigé à la soumission** — un envoi sans sous-raison, ou avec une sous-raison d'un autre motif, est refusé en `400`. La sous-raison est stockée à part (`Claim.returnReasonDetail`) et **n'est jamais envoyée au ML** : le schéma `/predict` de Flowmerce-ML refuse tout champ inconnu.
 
 #### Champs boutique — `merchant_fields`
 

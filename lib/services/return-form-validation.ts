@@ -119,6 +119,30 @@ export function validateAnswer(field: ReturnFormField, value: unknown): string |
   return null
 }
 
+// Champ dépendant (`depends_on`) : la valeur choisie doit être une option
+// rattachée à la valeur courante du champ parent. Sans ce contrôle, un client —
+// ou un moteur de rendu qui ignore `depends_on` — pourrait associer une
+// sous-raison de « Produit défectueux » au motif « Mauvaise taille ».
+// Appelée après `validateAnswer`, donc sur une valeur déjà connue des options.
+export function validateDependency(
+  field:   ReturnFormField,
+  answers: Record<string, unknown>,
+): string | null {
+  if (!field.depends_on) return null
+  const value = answers[field.id]
+  if (!isPresent(value)) return null
+
+  const option = (field.options ?? []).find(o => o.value === value)
+  if (!option?.parent) return null
+
+  const parentValue = answers[field.depends_on]
+  if (option.parent !== parentValue) {
+    return `Valeur invalide pour le champ ${field.id} : elle n'appartient pas `
+      + `à la valeur choisie pour ${field.depends_on}`
+  }
+  return null
+}
+
 export interface ValidateAnswersOptions {
   // Champs déjà connus du serveur (pré-remplis par la session de retour) :
   // ils ne sont pas attendus dans les réponses du client et ne sont donc pas
@@ -142,7 +166,7 @@ export function validateReturnFormAnswers(
   // elle doit respecter le type, les bornes et les options de sa définition.
   for (const field of allFields(form)) {
     if (skip.has(field.id)) continue
-    const error = validateAnswer(field, answers[field.id])
+    const error = validateAnswer(field, answers[field.id]) ?? validateDependency(field, answers)
     if (error) return error
   }
   return null

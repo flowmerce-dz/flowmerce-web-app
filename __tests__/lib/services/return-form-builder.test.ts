@@ -90,8 +90,13 @@ describe('contrat de version', () => {
   // reste compatible v1 (une case à cocher se rend partout, d'où un
   // `min_compatible_version` inchangé), mais une intégration qui code ses
   // champs en dur verra ses envois refusés jusqu'à ce qu'elle le transmette.
-  it('est en v2 — la section consent est exigée à la soumission', () => {
-    expect(RETURN_FORM_VERSION).toBe(2)
+  //
+  // v3 : la sous-raison `reason_detail` est exigée à la soumission. Même
+  // nature que v2 — un moteur v1 sait rendre un select —, donc
+  // `min_compatible_version` reste à 1.
+  it('est en v3 — la sous-raison du motif est exigée à la soumission', () => {
+    expect(RETURN_FORM_VERSION).toBe(3)
+    expect(RETURN_FORM_MIN_COMPATIBLE_VERSION).toBe(1)
   })
 
   it('le contrat de compatibilité est au premier niveau, pas dans meta', () => {
@@ -259,6 +264,8 @@ describe('buildReturnForm', () => {
       'product_name',
       'order_date',
       'reason',
+      'reason_detail',
+      'reason_comment',
       'desired_resolution',
       'description',
       'data_consent',

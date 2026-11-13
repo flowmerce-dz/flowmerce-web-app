@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, Inbox, Key, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { BarChart3, FileText, Inbox, Key, LayoutDashboard, ShieldCheck } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { SITE_LINKS } from "@/components/layout/siteLinks";
 
 const FOCUS =
@@ -39,6 +40,54 @@ const NAV_LINKS = [
   },
 ];
 
+const ANALYTICS_LINKS = [
+  {
+    href: "/dashboard/analytics/products",
+    label: "Retours produits",
+    sublabel: "Motifs et problèmes récurrents",
+    Icon: BarChart3,
+    exact: false,
+  },
+];
+
+type NavItem = {
+  href: string;
+  label: string;
+  sublabel: string;
+  Icon: LucideIcon;
+  exact: boolean;
+};
+
+function NavLink({ item, active }: { item: NavItem; active: boolean }) {
+  const { href, label, sublabel, Icon } = item;
+  return (
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      className={`group flex items-center gap-2.5 rounded-control px-3 py-2 transition-colors ${FOCUS} ${
+        active ? "bg-brand-soft text-brand-ink" : "text-body hover:bg-page hover:text-ink"
+      }`}
+    >
+      <span
+        aria-hidden
+        className={`flex size-6 shrink-0 items-center justify-center rounded-control transition-colors ${
+          active ? "bg-brand text-on-brand" : "bg-page text-body group-hover:bg-line"
+        }`}
+      >
+        <Icon size={13} strokeWidth={1.75} />
+      </span>
+      <span className="min-w-0">
+        <span
+          className={`block text-[13px] leading-none ${active ? "font-semibold" : "font-medium"}`}
+        >
+          {label}
+        </span>
+        <span className="mt-1 block text-[10.5px] leading-none text-faint">{sublabel}</span>
+      </span>
+    </Link>
+  );
+}
+
 export function DashboardNav({ isAdmin }: { isAdmin: boolean }) {
   const pathname = usePathname();
 
@@ -51,36 +100,17 @@ export function DashboardNav({ isAdmin }: { isAdmin: boolean }) {
         Menu
       </p>
 
-      {NAV_LINKS.map(({ href, label, sublabel, Icon, exact }) => {
-        const active = isActive(href, exact);
-        return (
-          <Link
-            key={href}
-            href={href}
-            aria-current={active ? "page" : undefined}
-            className={`group flex items-center gap-2.5 rounded-control px-3 py-2 transition-colors ${FOCUS} ${
-              active ? "bg-brand-soft text-brand-ink" : "text-body hover:bg-page hover:text-ink"
-            }`}
-          >
-            <span
-              aria-hidden
-              className={`flex size-6 shrink-0 items-center justify-center rounded-control transition-colors ${
-                active ? "bg-brand text-on-brand" : "bg-page text-body group-hover:bg-line"
-              }`}
-            >
-              <Icon size={13} strokeWidth={1.75} />
-            </span>
-            <span className="min-w-0">
-              <span
-                className={`block text-[13px] leading-none ${active ? "font-semibold" : "font-medium"}`}
-              >
-                {label}
-              </span>
-              <span className="mt-1 block text-[10.5px] leading-none text-faint">{sublabel}</span>
-            </span>
-          </Link>
-        );
-      })}
+      {NAV_LINKS.map((item) => (
+        <NavLink key={item.href} item={item} active={isActive(item.href, item.exact)} />
+      ))}
+
+      <p className="mb-2 mt-4 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+        Analyses et statistiques
+      </p>
+
+      {ANALYTICS_LINKS.map((item) => (
+        <NavLink key={item.href} item={item} active={isActive(item.href, item.exact)} />
+      ))}
 
       {isAdmin && (
         <>

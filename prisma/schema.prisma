@@ -218,9 +218,36 @@ model Claim {
   // n'aurait pas dû passer.
   dataConsentAt DateTime?
 
+  // ── Motif de retour, en trois données distinctes ──────────────────────────
+  // `returnReason` : motif principal, valeur exacte de RETURN_REASONS — la même
+  // que celle envoyée au ML dans Return_Reason (le ML n'en voit aucune autre).
+  // `returnReasonDetail` : code de la sous-raison (RETURN_REASON_DETAILS),
+  // toujours rattachée à `returnReason`. Jamais envoyée au ML.
+  // `returnReasonComment` : précision libre du client, facultative.
+  //
+  // Nullables : les réclamations antérieures n'ont pas de sous-raison, et rien
+  // ne justifie de leur en attribuer une. Leur motif principal a été repris de
+  // `mlInput.Return_Reason` à la migration.
+  returnReason        String?
+  returnReasonDetail  String?
+  returnReasonComment String?
+
+  // ── Identification du produit (analyses des retours) ──────────────────────
+  // `productId` : identifiant transmis par la boutique (API v1). `productKey` :
+  // clé de regroupement des analyses — `id:<productId>` quand il est connu,
+  // sinon `name:<nom normalisé>` (cf. lib/services/product-issues.ts).
+  productId  String?
+  productKey String?
+
+  // Ajustement du score de fraude quand des retours précédents du client
+  // s'expliquent par un problème collectif sur un produit. Trace complète :
+  // score brut, score ajusté, retours neutralisés et règle appliquée.
+  fraudAdjustment Json?
+
   vendor        Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
   @@unique([vendorId, orderId])
+  @@index([vendorId, productKey])
   @@index([vendorId, createdAt(sort: Desc)])
   @@index([vendorId, status])
   @@index([vendorId, policyRejected])

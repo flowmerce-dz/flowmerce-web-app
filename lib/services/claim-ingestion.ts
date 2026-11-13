@@ -14,9 +14,15 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import {
   findOrCreateFraudRecord,
-  computeFraudScore,
+  computeAdjustedFraudScore,
   recomputeNetworkSignals,
 } from '@/lib/fraud-score'
+import {
+  explainCustomerPastReturns,
+  productKey as toProductKey,
+  NO_EXPLANATION,
+  PRODUCT_ISSUE_RULE,
+} from '@/lib/services/product-issues'
 import { callMLPredict } from '@/lib/services/ml'
 import { applyMLDecision } from '@/lib/services/claim-decision'
 import { notifyCustomer } from '@/lib/services/notification'
@@ -97,7 +103,15 @@ export interface IngestClaimInput {
   customerEmail: string
   customerPhone: string | null
   productName:   string
+  // Identifiant produit transmis par la boutique (API v1), quand il existe.
+  productId?:    string | null
   description:   string
+  // Motif de retour, en trois données distinctes. `returnReason` est la valeur
+  // exacte de RETURN_REASONS — celle que porte aussi mlPayload.Return_Reason ;
+  // la sous-raison et le commentaire ne vont jamais au ML.
+  returnReason?:        string | null
+  returnReasonDetail?:  string | null
+  returnReasonComment?: string | null
   type:          'EXCHANGE' | 'REFUND' | 'REPAIR'  // choix client (desired_resolution)
   source:        'API' | 'HOSTED_PAGE'
   ipAddress?:    string | null
@@ -176,8 +190,42 @@ export async function ingestClaim(input: IngestClaimInput): Promise<IngestClaimR
     customerEmailNorm,
     customerPhoneNorm ?? undefined,
   )
-  const fraudScore  = computeFraudScore(fraudRecord)
+
+  // 1 bis. Retours précédents expliqués par un problème collectif sur un
+  // produit : ils ne doivent pas pénaliser le client. Best-effort — un échec
+  // de lecture retombe sur le score brut, exactement le comportement antérieur.
+  const explanation = await explainCustomerPastReturns(customerEmailNorm, customerPhoneNorm)
+    .catch((e) => {
+      log.error('claim_ingestion.product_issue_explain_error', { err: String(e) })
+      return NO_EXPLANATION
+    })
+  const adjusted = computeAdjustedFraudScore(fraudRecord, explanation.discount)
+
+  const fraudScore  = adjusted.adjustedScore
+  // Nombre RÉEL de retours (Customer_Past_Returns) : c'est un fait, il n'est
+  // pas corrigé. Seuls le score et le drapeau « suspect » le sont.
   const pastReturns = fraudRecord.totalClaims
+
+  // Trace de l'ajustement, persistée sur la réclamation. Les retours d'autres
+  // boutiques n'y apparaissent que comptés : leurs identifiants et produits
+  // n'ont pas à être lisibles depuis la réclamation de ce vendeur.
+  const fraudAdjustment = explanation.discount > 0
+    ? {
+        rawScore:            adjusted.rawScore,
+        adjustedScore:       adjusted.adjustedScore,
+        pastReturns:         adjusted.pastReturns,
+        adjustedPastReturns: adjusted.adjustedPastReturns,
+        discount:            explanation.discount,
+        explained: explanation.explained
+          .filter(e => e.vendorId === input.vendor.id)
+          .map(({ claimId, productKey, reasonDetail, confidence, discount }) =>
+            ({ claimId, productKey, reasonDetail, confidence, discount })),
+        explainedOtherVendors:
+          explanation.explained.filter(e => e.vendorId !== input.vendor.id).length,
+        rule:       PRODUCT_ISSUE_RULE,
+        computedAt: new Date().toISOString(),
+      }
+    : null
 
   // 2. Prediction canonique (14 champs de base, sans aiDecision plat).
   // Le résultat ML sera mergé en plus si l'appel réussit (étape 5).
@@ -205,8 +253,10 @@ export async function ingestClaim(input: IngestClaimInput): Promise<IngestClaimR
         ...(customerIdNorm ? { Customer_ID: customerIdNorm } : {}),
         Fraud_Score:           fraudScore,
         Customer_Past_Returns: pastReturns,
+        // Sur le nombre AJUSTÉ : un client n'est pas marqué suspect parce
+        // qu'un produit défaillant l'a fait revenir plusieurs fois.
         Is_Suspicious:
-          pastReturns >= (returnPolicy?.fraudReturnThreshold ?? 4) ? 1 : 0,
+          adjusted.adjustedPastReturns >= (returnPolicy?.fraudReturnThreshold ?? 4) ? 1 : 0,
       }
     : null
 
@@ -238,9 +288,19 @@ export async function ingestClaim(input: IngestClaimInput): Promise<IngestClaimR
           customerEmail: customerEmailNorm,
           customerPhone: customerPhoneNorm,
           productName:   input.productName.trim(),
+          productId:     input.productId?.trim() || null,
+          productKey:    toProductKey(input.productId, input.productName),
           orderDate:     input.orderDate ?? null,
           type:          input.type,
           description:   input.description,
+          returnReason:        input.returnReason        ?? null,
+          returnReasonDetail:  input.returnReasonDetail  ?? null,
+          returnReasonComment: input.returnReasonComment ?? null,
+          // Sans ajustement, la colonne reste NULL (et non un JSON `null`) :
+          // « pas d'ajustement » se lit alors d'un simple IS NULL.
+          ...(fraudAdjustment
+            ? { fraudAdjustment: fraudAdjustment as unknown as Prisma.InputJsonValue }
+            : {}),
           source:        input.source,
           dataConsentAt: input.dataConsentAt ?? null,
           // Hors politique : refus immédiat et définitif, le claim naît

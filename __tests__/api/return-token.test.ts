@@ -76,6 +76,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
 // ni le mode de paiement — ce sont des données boutique lues sur la session.
 const CLIENT_ANSWERS = {
   reason:             'Produit défectueux',
+  reason_detail:      'NOT_WORKING',
   desired_resolution: 'REFUND',
   description:        'Semelle décollée à la réception.',
 }
@@ -339,6 +340,7 @@ describe('POST /api/return/[token]', () => {
     const res = await callPost({
       answers: {
         reason:             'Produit défectueux',
+        reason_detail:      'NOT_WORKING',
         desired_resolution: 'REFUND',
       },
     })

@@ -23,8 +23,9 @@ vi.mock('@/lib/services/claim-ingestion', () => ({
   ingestClaim: (...args: unknown[]) => mockIngestClaim(...args),
 }))
 
+const mockBuildMLPayload = vi.fn<(input: Record<string, unknown>) => object>(() => ({}))
 vi.mock('@/lib/services/ml', () => ({
-  buildMLPayload: () => ({}),
+  buildMLPayload: (input: Record<string, unknown>) => mockBuildMLPayload(input),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -70,6 +71,7 @@ const VALID_ANSWERS: Record<string, unknown> = {
   shipping_cost:     500,
   order_date:        '2026-07-01',
   reason:            'Produit défectueux',
+  reason_detail:     'NOT_WORKING',
   desired_resolution: 'REFUND',
   description:       'Le produit est tombé en panne dès le premier usage.',
   // Section `consent` du formulaire : la boutique la rend comme les autres et
@@ -397,6 +399,73 @@ describe('POST /api/v1/returns', () => {
       )
 
       expect(res.status).toBe(201)
+    })
+  })
+  // ── Motif, sous-raison et commentaire ──────────────────────────────────────
+  describe('sous-raison du motif', () => {
+    const answers = (over: Record<string, unknown>) => validBody({ answers: { ...VALID_ANSWERS, ...over } })
+
+    it('enregistre séparément motif, sous-raison, commentaire et identifiant produit', async () => {
+      authOk()
+      const res = await callPost(answers({
+        reason: 'Mauvaise taille', reason_detail: 'TOO_SMALL', reason_comment: 'Je chausse du 42',
+      }))
+
+      expect(res.status).toBe(201)
+      expect(mockIngestClaim).toHaveBeenCalledWith(expect.objectContaining({
+        returnReason:        'Mauvaise taille',
+        returnReasonDetail:  'TOO_SMALL',
+        returnReasonComment: 'Je chausse du 42',
+        productId:           'prod_1',
+      }))
+    })
+
+    it('ne transmet au ML que le motif principal', async () => {
+      authOk()
+      await callPost(answers({ reason: 'Mauvaise taille', reason_detail: 'TOO_SMALL' }))
+
+      const mlInput = mockBuildMLPayload.mock.calls[0][0] as Record<string, unknown>
+      expect(mlInput.reason).toBe('Mauvaise taille')
+      expect(JSON.stringify(mlInput)).not.toContain('TOO_SMALL')
+    })
+
+    it('refuse une sous-raison qui appartient à un autre motif', async () => {
+      authOk()
+      const res = await callPost(answers({ reason: 'Mauvaise taille', reason_detail: 'NOT_WORKING' }))
+
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/reason_detail/)
+      expect(mockIngestClaim).not.toHaveBeenCalled()
+    })
+
+    it('exige la sous-raison, y compris par API', async () => {
+      authOk()
+      const withoutDetail = { ...VALID_ANSWERS }
+      delete withoutDetail.reason_detail
+      const res = await callPost(validBody({ answers: withoutDetail }))
+
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/reason_detail/)
+      expect(mockIngestClaim).not.toHaveBeenCalled()
+    })
+
+    it('refuse un motif non autorisé par la politique du vendeur', async () => {
+      authOk()
+      vendor.returnPolicy = {
+        maxClaimDays: 30, acceptedTypes: [], acceptedReturnReasons: ['Produit défectueux'],
+        nonRefundableCategories: [], exchangeOnlyCategories: [],
+      }
+      const res = await callPost(answers({ reason: 'Mauvaise taille', reason_detail: 'TOO_SMALL' }))
+
+      expect(res.status).toBe(400)
+      expect(mockIngestClaim).not.toHaveBeenCalled()
+    })
+
+    it('refuse un commentaire trop long', async () => {
+      authOk()
+      const res = await callPost(answers({ reason_comment: 'x'.repeat(1001) }))
+      expect(res.status).toBe(400)
+      expect(mockIngestClaim).not.toHaveBeenCalled()
     })
   })
 })

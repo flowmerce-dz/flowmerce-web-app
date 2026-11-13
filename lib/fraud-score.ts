@@ -123,6 +123,48 @@ export function computeFraudScore(record: CustomerFraudRecord | null): number {
 }
 
 // ─────────────────────────────────────────────────────────────
+// computeAdjustedFraudScore
+//
+// Variante de computeFraudScore qui ne compte pas — ou compte à moitié — les
+// retours précédents expliqués par un problème collectif sur un produit
+// (lib/services/product-issues.ts). `discount` est ce nombre de retours,
+// pondéré par la confiance de la détection.
+//
+// Seule la composante « nombre de retours » est corrigée : les refus signalés
+// par les marchands et la diversité des vendeurs sont des signaux indépendants
+// du produit, ils restent intacts. Le compteur stocké (`totalClaims`) n'est pas
+// modifié : l'ajustement est recalculé à chaque évaluation, il suit donc
+// l'apparition — ou la disparition — d'un problème collectif.
+// ─────────────────────────────────────────────────────────────
+export interface AdjustedFraudScore {
+  rawScore:            number
+  adjustedScore:       number
+  pastReturns:         number
+  adjustedPastReturns: number
+}
+
+export function computeAdjustedFraudScore(
+  record:   CustomerFraudRecord | null,
+  discount: number,
+): AdjustedFraudScore {
+  const rawScore    = computeFraudScore(record)
+  const pastReturns = record?.totalClaims ?? 0
+  const safeDiscount = Number.isFinite(discount) && discount > 0 ? discount : 0
+  const adjustedPastReturns = Math.max(pastReturns - safeDiscount, 0)
+
+  if (!record || safeDiscount === 0) {
+    return { rawScore, adjustedScore: rawScore, pastReturns, adjustedPastReturns: pastReturns }
+  }
+
+  return {
+    rawScore,
+    adjustedScore: computeFraudScore({ ...record, totalClaims: adjustedPastReturns }),
+    pastReturns,
+    adjustedPastReturns,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // recomputeDistinctVendors
 // Recompte les vendeurs uniques ayant interagi avec ce client
 // (claims + refusal reports). À appeler après chaque évènement.

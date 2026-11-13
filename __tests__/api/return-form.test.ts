@@ -74,16 +74,19 @@ describe('GET /api/v1/return-form', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
 
-    // v2 depuis l'ajout de la section `consent`, mais toujours rendable par un
+    // v3 depuis l'ajout de la sous-raison exigée, mais toujours rendable par un
     // moteur v1 — c'est ce que dit `min_compatible_version`.
-    expect(body.version).toBe(2)
+    expect(body.version).toBe(3)
     expect(body.min_compatible_version).toBe(1)
     expect(body.title).toBe('Demande de retour')
     expect(body.meta.shop).toEqual({ name: 'Caba Store', slug: 'caba-store', website: 'https://caba.example.com' })
     expect(body.sections.map((s: { id: string }) => s.id)).toEqual([
       'order', 'reason', 'resolution', 'description', 'consent',
     ])
-    expect(body.sections[1].fields[0].id).toBe('reason')
+    expect(body.sections[1].fields.map((f: { id: string }) => f.id)).toEqual([
+      'reason', 'reason_detail', 'reason_comment',
+    ])
+    expect(body.sections[1].fields[1].depends_on).toBe('reason')
   })
 
   it('gère aussi la clé via l’en-tête x-api-key', async () => {

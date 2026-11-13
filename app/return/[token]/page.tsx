@@ -22,6 +22,12 @@ import {
   ChevronDown, ShieldCheck, Cpu, Network,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import {
+  applyAnswerChange,
+  isAwaitingParent,
+  isEmphasized,
+  visibleOptions,
+} from '@/lib/form-dependencies'
 
 // ── Vocabulaire visuel partagé ──────────────────────────────────────────────
 const FOCUS =
@@ -48,6 +54,9 @@ interface FormOption {
   value:        string
   label:        string
   description?: string
+  /** Champ dépendant : valeur du parent à laquelle l'option appartient. */
+  parent?:      string
+  is_other?:    boolean
 }
 
 // 'merchant' : valeur fournie par la boutique, jamais saisie par le client.
@@ -59,6 +68,10 @@ interface FormField {
   label:         string
   source?:       FieldSource
   required:      boolean
+  /** Id du champ parent : seules ses options rattachées sont proposées. */
+  depends_on?:   string
+  /** Mis en avant quand l'option « Autre » est choisie dans ce champ. */
+  emphasized_by?: string
   placeholder?:  string
   defaultValue?: string | number | boolean | null
   options:       FormOption[]
@@ -153,11 +166,12 @@ function Standalone({ children }: { children: React.ReactNode }) {
 
 // ── Select générique (piloté par les options du formulaire) ─────────────────
 function SelectField({
-  field, value, onChange,
+  field, value, onChange, disabled = false,
 }: {
-  field:    FormField
-  value:    string
-  onChange: (v: string) => void
+  field:     FormField
+  value:     string
+  onChange:  (v: string) => void
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -178,9 +192,10 @@ function SelectField({
         type="button"
         id={field.id}
         onClick={() => setOpen(o => !o)}
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`flex w-full items-center justify-between rounded-control border bg-surface px-3.5 py-2.5 text-[15px] transition-colors ${FOCUS} ${
+        className={`flex w-full items-center justify-between rounded-control border bg-surface px-3.5 py-2.5 text-[15px] transition-colors disabled:cursor-not-allowed disabled:bg-page disabled:opacity-60 ${FOCUS} ${
           open ? 'border-brand' : 'border-line hover:border-brand/40'
         }`}
       >
@@ -234,14 +249,15 @@ function SelectField({
 
 // ── Champ générique ─────────────────────────────────────────────────────────
 function Field({
-  field, value, onChange,
+  field, value, onChange, disabled = false,
 }: {
-  field:    FormField
-  value:    FieldValue
-  onChange: (v: FieldValue) => void
+  field:     FormField
+  value:     FieldValue
+  onChange:  (v: FieldValue) => void
+  disabled?: boolean
 }) {
   if (field.type === 'select') {
-    return <SelectField field={field} value={String(value ?? '')} onChange={onChange} />
+    return <SelectField field={field} value={String(value ?? '')} onChange={onChange} disabled={disabled} />
   }
 
   if (field.type === 'textarea') {
@@ -368,8 +384,14 @@ export default function ReturnPage() {
 
   const blocked = missingRequired || !consent
 
+  // Tous les champs saisissables, à plat : la résolution des dépendances
+  // (`depends_on`) traverse les sections.
+  const inputFields = useMemo(() => inputSections.flatMap(s => s.fields), [inputSections])
+
+  // Changer le motif efface une sous-raison qui ne lui appartient plus : sans
+  // cela, l'ancienne valeur resterait sélectionnée en silence et serait envoyée.
   const setAnswer = (id: string, value: FieldValue) =>
-    setAnswers(a => ({ ...a, [id]: value }))
+    setAnswers(a => applyAnswerChange(inputFields, a, id, value))
 
   const handleSubmit = async () => {
     if (blocked) return
@@ -556,24 +578,45 @@ export default function ReturnPage() {
               )}
             </div>
             <div className="space-y-4 p-5">
-              {section.fields.map(field => (
-                <div key={field.id}>
-                  {/* Le libellé n'est masqué que s'il répète le titre de section */}
-                  {!(section.fields.length === 1 && field.label === section.title) && (
-                    <label htmlFor={field.id} className={LABEL}>
-                      {field.label}
-                      {field.required && (
-                        <span className="ml-1 text-brand-ink" aria-hidden>*</span>
-                      )}
-                    </label>
-                  )}
-                  <Field
-                    field={field}
-                    value={answers[field.id] ?? ''}
-                    onChange={v => setAnswer(field.id, v)}
-                  />
-                </div>
-              ))}
+              {section.fields.map(field => {
+                // Champ dépendant : seules les options du parent choisi, et
+                // inactif tant que ce parent est vide.
+                const awaiting = isAwaitingParent(field, answers)
+                const shown    = field.depends_on
+                  ? { ...field, options: visibleOptions(field, answers) }
+                  : field
+                const emphasized = isEmphasized(field, inputFields, answers)
+
+                return (
+                  <div key={field.id}>
+                    {/* Le libellé n'est masqué que s'il répète le titre de section */}
+                    {!(section.fields.length === 1 && field.label === section.title) && (
+                      <label htmlFor={field.id} className={LABEL}>
+                        {field.label}
+                        {field.required && (
+                          <span className="ml-1 text-brand-ink" aria-hidden>*</span>
+                        )}
+                        {emphasized && (
+                          <span className="ml-1.5 font-normal text-brand-ink">— recommandé</span>
+                        )}
+                      </label>
+                    )}
+                    <Field
+                      field={emphasized
+                        ? { ...shown, placeholder: 'Décrivez le problème rencontré…' }
+                        : shown}
+                      value={answers[field.id] ?? ''}
+                      onChange={v => setAnswer(field.id, v)}
+                      disabled={awaiting}
+                    />
+                    {emphasized && (
+                      <p className="mt-1.5 text-[12px] text-body">
+                        Vous avez choisi « Autre » : précisez le problème pour que la boutique puisse traiter votre demande.
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </section>
         ))}
