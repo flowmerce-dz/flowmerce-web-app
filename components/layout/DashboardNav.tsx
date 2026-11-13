@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, Inbox, Key, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { BarChart3, FileText, Inbox, Key, LayoutDashboard, ShieldCheck, Table2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { SITE_LINKS } from "@/components/layout/siteLinks";
 
@@ -46,6 +46,13 @@ const ANALYTICS_LINKS = [
     label: "Retours produits",
     sublabel: "Motifs et problèmes récurrents",
     Icon: BarChart3,
+    exact: false,
+  },
+  {
+    href: "/dashboard/analytics/returns",
+    label: "Détail des retours",
+    sublabel: "Par produit, motif ou client",
+    Icon: Table2,
     exact: false,
   },
 ];

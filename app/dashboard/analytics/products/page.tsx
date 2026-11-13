@@ -14,15 +14,17 @@ import { BarChart3, Lightbulb, PackageSearch, Users, RotateCcw, Package } from '
 import { getSessionServer } from '@/lib/getSession'
 import { prisma } from '@/lib/prisma'
 import { checkVendorAccess } from '@/lib/vendorGuard'
-import { Card, CardTitle, EmptyState, Notice, PageHeader, StatTile } from '@/components/dashboard/ui'
+import { Card, CardTitle, EmptyState, FOCUS, Notice, PageHeader, StatTile } from '@/components/dashboard/ui'
 import {
   getProductReturnAnalytics,
   type ProductReturnStats,
 } from '@/lib/services/product-issues'
+import { returnsTableHref } from '@/lib/services/return-explorer'
+import { ShowMoreList } from './ShowMoreList'
 
-// Le détail n'est déroulé que pour les produits les plus retournés : au-delà,
-// la page deviendrait une liste exhaustive plutôt qu'une analyse.
-const PRODUCTS_SHOWN = 10
+// Les produits sont déroulés par tranches, des plus retournés aux moins
+// retournés : la page reste une analyse, la suite est à portée d'un clic.
+const PRODUCTS_STEP = 10
 
 const pct = (share: number) => `${Math.round(share * 100)} %`
 
@@ -45,7 +47,6 @@ export default async function ProductReturnsAnalyticsPage() {
   if (!vendor) redirect('/dashboard')
 
   const analytics = await getProductReturnAnalytics(vendor.id)
-  const products  = analytics.products.slice(0, PRODUCTS_SHOWN)
   const withIssue = analytics.products.filter(p => p.issues.length > 0).length
 
   return (
@@ -84,15 +85,11 @@ export default async function ProductReturnsAnalyticsPage() {
             l’introduction des sous-raisons apparaissent avec leur motif, sans précision.
           </p>
 
-          {products.map((product, i) => (
-            <ProductCard key={product.productKey} product={product} rank={i + 1} months={analytics.months} />
-          ))}
-
-          {analytics.products.length > PRODUCTS_SHOWN && (
-            <p className="text-center text-[12px] text-faint">
-              {analytics.products.length - PRODUCTS_SHOWN} autre(s) produit(s) retourné(s), non détaillé(s) ici.
-            </p>
-          )}
+          <ShowMoreList step={PRODUCTS_STEP} noun={{ one: 'produit', other: 'produits' }}>
+            {analytics.products.map((product, i) => (
+              <ProductCard key={product.productKey} product={product} rank={i + 1} months={analytics.months} />
+            ))}
+          </ShowMoreList>
         </div>
       )}
     </div>
@@ -119,7 +116,13 @@ function ProductCard({
         }
       >
         <span className="mr-1.5 text-faint tabular-nums">#{rank}</span>
-        {product.productName}
+        <a
+          href={returnsTableHref({ product: product.productKey })}
+          title={`Voir le détail des retours de ${product.productName}`}
+          className={`rounded-control hover:text-brand-ink hover:underline ${FOCUS}`}
+        >
+          {product.productName}
+        </a>
       </CardTitle>
 
       <dl className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
