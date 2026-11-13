@@ -42,12 +42,58 @@ export function productKey(
   return name ? `name:${name}` : null
 }
 
-/** Identité d'un client final : e-mail normalisé, sinon téléphone. */
-export function customerKey(email?: string | null, phone?: string | null): string | null {
+/**
+ * Identifiants d'un client final : e-mail normalisé et téléphone. Les deux
+ * comptent : le dossier anti-fraude rapproche un client par l'un OU l'autre,
+ * et la détection doit l'identifier au moins aussi largement — sinon un même
+ * client, avec deux e-mails et un téléphone, passerait pour deux clients.
+ */
+export function customerIdentities(email?: string | null, phone?: string | null): string[] {
+  const ids: string[] = []
   const e = email?.trim().toLowerCase()
-  if (e) return `email:${e}`
+  if (e) ids.push(`email:${e}`)
   const p = phone?.trim()
-  return p ? `phone:${p}` : null
+  if (p) ids.push(`phone:${p}`)
+  return ids
+}
+
+/**
+ * Regroupe en un même client les retours qui partagent un e-mail ou un
+ * téléphone, de proche en proche (union-find) : A et B partagent un téléphone,
+ * B et C un e-mail → A, B et C sont un seul client. Un retour sans identité
+ * reste un client à part, jamais fusionné avec un autre inconnu.
+ */
+export function resolveCustomers(returns: readonly Pick<ProductReturn, 'claimId' | 'identities'>[]) {
+  const parent = new Map<string, string>()
+  const add  = (x: string) => { if (!parent.has(x)) parent.set(x, x) }
+  const find = (x: string): string => {
+    let root = x
+    while (parent.get(root) !== root) root = parent.get(root)!
+    for (let cur = x; cur !== root;) {
+      const next = parent.get(cur)!
+      parent.set(cur, root)
+      cur = next
+    }
+    return root
+  }
+  const union = (a: string, b: string) => {
+    add(a); add(b)
+    const ra = find(a), rb = find(b)
+    if (ra !== rb) parent.set(rb, ra)
+  }
+
+  for (const r of returns) {
+    const node = `claim:${r.claimId}`
+    add(node)
+    for (const id of r.identities) union(node, id)
+  }
+
+  return {
+    /** Client d'un retour. */
+    ofClaim:    (claimId: string) => find(`claim:${claimId}`),
+    /** Client portant cet identifiant, s'il apparaît parmi les retours. */
+    ofIdentity: (id: string) => (parent.has(id) ? find(id) : null),
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -80,7 +126,10 @@ export interface ProductReturn {
   productKey:   string | null
   reason:       string | null
   reasonDetail: string | null
-  customerKey:  string | null
+  /** customerIdentities(email, phone) du client. */
+  identities:   string[]
+  /** Statut de la réclamation — lu seulement si `evidenceStatuses` est fourni. */
+  status?:      string
   createdAt?:   Date
 }
 
@@ -97,10 +146,6 @@ export interface ProductIssue {
   firstReportedAt:   Date | null
   lastReportedAt:    Date | null
 }
-
-// Un retour sans identité client compte pour un client à part entière, mais
-// jamais fusionné avec un autre : on ne suppose pas deux inconnus identiques.
-const customerOf = (r: ProductReturn) => r.customerKey ?? `claim:${r.claimId}`
 
 function groupBy<T>(items: readonly T[], key: (item: T) => string | null): Map<string, T[]> {
   const map = new Map<string, T[]>()
@@ -125,21 +170,51 @@ function dateRange(items: readonly ProductReturn[]): { first: Date | null; last:
   return { first, last }
 }
 
+export interface DetectOptions {
+  /**
+   * Identifiants d'un client à écarter de la preuve, avec tout ce qui lui est
+   * rattaché par e-mail ou téléphone. Sert au score de fraude : un client ne
+   * peut jamais contribuer au problème collectif qui excuserait ses propres
+   * retours — ni sous son nom, ni sous une identité liée.
+   */
+  excludeIdentities?: readonly string[]
+  /**
+   * Statuts admis comme preuve. Appliqué APRÈS le rapprochement des identités :
+   * une réclamation non retenue comme preuve sert encore à relier deux
+   * identités d'une même personne.
+   */
+  evidenceStatuses?: readonly string[]
+}
+
 /**
  * Problèmes collectifs parmi des retours. Les retours doivent appartenir à UN
  * SEUL vendeur : une clé produit n'a de sens que dans sa boutique.
  */
-export function detectProductIssues(returns: readonly ProductReturn[]): ProductIssue[] {
+export function detectProductIssues(
+  returns: readonly ProductReturn[],
+  opts:    DetectOptions = {},
+): ProductIssue[] {
+  const customers = resolveCustomers(returns)
+  const excluded  = new Set(
+    (opts.excludeIdentities ?? [])
+      .map(customers.ofIdentity)
+      .filter((root): root is string => root !== null),
+  )
+  const statuses = opts.evidenceStatuses
+  const evidence = returns.filter(r =>
+    !excluded.has(customers.ofClaim(r.claimId))
+    && (!statuses || (r.status !== undefined && statuses.includes(r.status))))
+
   const issues: ProductIssue[] = []
 
-  for (const [key, productReturns] of groupBy(returns, r => r.productKey)) {
+  for (const [key, productReturns] of groupBy(evidence, r => r.productKey)) {
     const total = productReturns.length
 
     for (const [code, withDetail] of groupBy(productReturns, r => r.reasonDetail)) {
       const known = findReturnReasonDetail(code)
       if (!known?.detail.productRelated) continue
 
-      const distinctCustomers = new Set(withDetail.map(customerOf)).size
+      const distinctCustomers = new Set(withDetail.map(r => customers.ofClaim(r.claimId))).size
       const share = withDetail.length / total
       if (distinctCustomers < PRODUCT_ISSUE_RULE.minDistinctCustomers) continue
       if (share < PRODUCT_ISSUE_RULE.minShare) continue
@@ -289,7 +364,7 @@ function toReturn(c: AnalyticsClaim): ProductReturn {
     productKey:   c.productKey,
     reason:       c.returnReason,
     reasonDetail: c.returnReasonDetail,
-    customerKey:  customerKey(c.customerEmail, c.customerPhone),
+    identities:   customerIdentities(c.customerEmail, c.customerPhone),
     createdAt:    c.createdAt,
   }
 }
@@ -321,13 +396,16 @@ export function aggregateProductReturns(
   const months = lastMonths(now)
   const returns = claims.map(toReturn)
   const issuesByProduct = groupBy(detectProductIssues(returns), i => i.productKey)
+  // Un client = toutes ses identités liées : « clients concernés » ne compte
+  // jamais deux fois la même personne sous deux e-mails.
+  const customers  = resolveCustomers(returns)
+  const distinctOf = (rs: readonly ProductReturn[]) => new Set(rs.map(r => customers.ofClaim(r.claimId))).size
 
   const products: ProductReturnStats[] = []
 
   for (const [key, productClaims] of groupBy(claims, c => c.productKey)) {
     const total = productClaims.length
     const productReturns = productClaims.map(toReturn)
-    const distinctOf = (rs: ProductReturn[]) => new Set(rs.map(customerOf)).size
 
     const reasons: ReasonBreakdown[] = []
     for (const [reason, withReason] of groupBy(productReturns, r => isReturnReason(r.reason) ? r.reason : null)) {
@@ -394,7 +472,7 @@ export function aggregateProductReturns(
 
   return {
     totalReturns:      claims.length,
-    distinctCustomers: new Set(returns.map(customerOf)).size,
+    distinctCustomers: distinctOf(returns),
     products,
     months,
   }
@@ -451,31 +529,58 @@ export const NO_EXPLANATION: PastReturnsExplanation = { discount: 0, explained: 
 interface ExplainableClaim {
   id:                 string
   vendorId:           string
+  status:             string
   productKey:         string | null
   returnReasonDetail: string | null
   customerEmail:      string | null
   customerPhone:      string | null
 }
 
+// Seules les réclamations ACCEPTÉES par le marchand prouvent un problème
+// produit : une réclamation en attente n'a été examinée par personne, et une
+// réclamation refusée a été jugée injustifiée. Sans ce filtre, des demandes
+// fabriquées — jamais acceptées — suffiraient à faire baisser un score de
+// fraude partagé entre toutes les boutiques.
+export const EVIDENCE_STATUSES = ['APPROVED', 'IN_PROGRESS'] as const
+
 /**
  * Partie pure : parmi les retours précédents du client, ceux qu'un problème
- * collectif sur le produit explique. `productClaims` contient tous les retours
- * des produits concernés, toutes boutiques confondues — la détection est faite
+ * collectif sur le produit explique. `productClaims` contient les retours des
+ * produits concernés, toutes boutiques confondues — la détection est faite
  * boutique par boutique.
+ *
+ * Garde-fous contre l'auto-disculpation :
+ *   • la preuve ne retient que des réclamations acceptées (EVIDENCE_STATUSES) ;
+ *   • le client évalué en est retiré, avec toute identité qui lui est liée par
+ *     e-mail ou téléphone : il ne peut pas fabriquer le problème qui l'excuse ;
+ *   • un retour du client que le marchand a refusé n'est jamais excusé.
  */
 export function explainReturns(
   customerClaims: readonly ExplainableClaim[],
   productClaims:  readonly ExplainableClaim[],
+  requester:      { email?: string | null; phone?: string | null } = {},
 ): PastReturnsExplanation {
+  // Toutes les identités connues du client évalué : celles de la demande, et
+  // celles portées par ses réclamations passées (retrouvées par e-mail OU
+  // téléphone, donc éventuellement sous une autre adresse).
+  const excludeIdentities = [
+    ...customerIdentities(requester.email, requester.phone),
+    ...customerClaims.flatMap(c => customerIdentities(c.customerEmail, c.customerPhone)),
+  ]
+
   const issues = new Map<string, ProductIssue>()
   for (const [vendorId, vendorClaims] of groupBy(productClaims, c => c.vendorId)) {
-    const detected = detectProductIssues(vendorClaims.map(c => ({
-      claimId:      c.id,
-      productKey:   c.productKey,
-      reason:       null,
-      reasonDetail: c.returnReasonDetail,
-      customerKey:  customerKey(c.customerEmail, c.customerPhone),
-    })))
+    const detected = detectProductIssues(
+      vendorClaims.map(c => ({
+        claimId:      c.id,
+        productKey:   c.productKey,
+        reason:       null,
+        reasonDetail: c.returnReasonDetail,
+        identities:   customerIdentities(c.customerEmail, c.customerPhone),
+        status:       c.status,
+      })),
+      { excludeIdentities, evidenceStatuses: EVIDENCE_STATUSES },
+    )
     for (const issue of detected) {
       issues.set(`${vendorId}|${issue.productKey}|${issue.reasonDetail}`, issue)
     }
@@ -484,6 +589,7 @@ export function explainReturns(
   const explained: ExplainedReturn[] = []
   for (const c of customerClaims) {
     if (!c.productKey || !c.returnReasonDetail) continue
+    if (c.status === 'REJECTED') continue
     const issue = issues.get(`${c.vendorId}|${c.productKey}|${c.returnReasonDetail}`)
     if (!issue) continue
     explained.push({
@@ -505,6 +611,7 @@ export function explainReturns(
 const EXPLAIN_SELECT = {
   id:                 true,
   vendorId:           true,
+  status:             true,
   productKey:         true,
   returnReasonDetail: true,
   customerEmail:      true,
@@ -542,10 +649,13 @@ export async function explainCustomerPastReturns(
     if (c.productKey) products.set(`${c.vendorId}|${c.productKey}`, { vendorId: c.vendorId, productKey: c.productKey })
   }
 
+  // Toutes les réclamations des produits, quel que soit leur statut : celles
+  // qui ne comptent pas comme preuve servent encore à relier les identités.
+  // Le tri preuve / non-preuve est fait dans explainReturns.
   const productClaims = await prisma.claim.findMany({
-    where:  { OR: [...products.values()], policyRejected: false },
+    where:  { OR: [...products.values()] },
     select: EXPLAIN_SELECT,
   })
 
-  return explainReturns(customerClaims, productClaims)
+  return explainReturns(customerClaims, productClaims, { email, phone })
 }

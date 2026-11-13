@@ -6,7 +6,7 @@ vi.mock('@/lib/prisma', () => ({ prisma: { claim: { findMany: mockFindMany } } }
 
 import {
   aggregateProductReturns,
-  customerKey,
+  customerIdentities,
   detectProductIssues,
   explainCustomerPastReturns,
   explainReturns,
@@ -24,23 +24,28 @@ beforeEach(() => {
 })
 
 // Fabrique de retours : `n` clients différents (ou le même, avec sameCustomer).
+// Acceptés par défaut : c'est le cas où ils comptent comme preuve.
 let seq = 0
 function returns(
   n: number,
   reasonDetail: string | null,
-  opts: { product?: string; reason?: string | null; sameCustomer?: string; vendorId?: string } = {},
+  opts: {
+    product?: string; reason?: string | null; sameCustomer?: string; vendorId?: string
+    phone?: string | null; status?: string
+  } = {},
 ) {
   return Array.from({ length: n }, () => {
     seq++
     return {
       id:                 `c${seq}`,
       vendorId:           opts.vendorId ?? 'v1',
+      status:             opts.status ?? 'APPROVED',
       productKey:         opts.product ?? 'id:NIKE-AIR',
       productName:        'Chaussures Nike Air',
       returnReason:       opts.reason === undefined ? 'Mauvaise taille' : opts.reason,
       returnReasonDetail: reasonDetail,
       customerEmail:      opts.sameCustomer ?? `client${seq}@exemple.dz`,
-      customerPhone:      null,
+      customerPhone:      opts.phone ?? null,
       createdAt:          new Date('2026-11-05T10:00:00Z'),
     }
   })
@@ -51,7 +56,8 @@ const asReturn = (c: ReturnType<typeof returns>[number]): ProductReturn => ({
   productKey:   c.productKey,
   reason:       c.returnReason,
   reasonDetail: c.returnReasonDetail,
-  customerKey:  customerKey(c.customerEmail, c.customerPhone),
+  identities:   customerIdentities(c.customerEmail, c.customerPhone),
+  status:       c.status,
   createdAt:    c.createdAt,
 })
 
@@ -64,10 +70,10 @@ describe('clés de regroupement', () => {
     expect(productKey(null, '   ')).toBeNull()
   })
 
-  it('identifie un client par e-mail, sinon par téléphone', () => {
-    expect(customerKey(' A@B.DZ ', '0555')).toBe('email:a@b.dz')
-    expect(customerKey(null, '0555')).toBe('phone:0555')
-    expect(customerKey(null, null)).toBeNull()
+  it('identifie un client par son e-mail ET son téléphone', () => {
+    expect(customerIdentities(' A@B.DZ ', '0555')).toEqual(['email:a@b.dz', 'phone:0555'])
+    expect(customerIdentities(null, '0555')).toEqual(['phone:0555'])
+    expect(customerIdentities(null, null)).toEqual([])
   })
 })
 
@@ -244,7 +250,8 @@ describe('correction du score de fraude', () => {
   })
 
   it('compte à moitié un retour expliqué avec une confiance moyenne', () => {
-    const product = [...returns(3, 'TOO_SMALL'), ...returns(5, 'NOT_WORKING', { reason: 'Produit défectueux' })]
+    // 4 « Trop petit » dont celui du client : 3 AUTRES clients, 3/8 = 37,5 %.
+    const product = [...returns(4, 'TOO_SMALL'), ...returns(5, 'NOT_WORKING', { reason: 'Produit défectueux' })]
     expect(explainReturns([product[0]], product).discount).toBe(0.5)
   })
 
@@ -298,8 +305,80 @@ describe('correction du score de fraude', () => {
     expect(second.OR).toEqual([{ vendorId: 'v1', productKey: 'id:NIKE-AIR' }])
   })
 
+  it('lecture en base : les produits sont relus quel que soit le statut, pour relier les identités', async () => {
+    const product = returns(4, 'TOO_SMALL')
+    mockFindMany.mockResolvedValueOnce([product[0]]).mockResolvedValueOnce(product)
+    await explainCustomerPastReturns(product[0].customerEmail, null)
+    expect(mockFindMany.mock.calls[1][0].where).not.toHaveProperty('status')
+  })
+
   it("sans identité client, aucune lecture et aucun ajustement", async () => {
     expect(await explainCustomerPastReturns(null, null)).toEqual({ discount: 0, explained: [] })
     expect(mockFindMany).not.toHaveBeenCalled()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────
+// Garde-fous anti-manipulation (revue de sécurité)
+// ─────────────────────────────────────────────────────────────
+describe("anti-manipulation : un client ne peut pas s'excuser lui-même", () => {
+  it('fusionne en un seul client des e-mails différents partageant un téléphone', () => {
+    // 5 « clients » qui sont un seul fraudeur : même téléphone, e-mails jetables.
+    const rs = returns(5, 'TOO_SMALL', { phone: '0555000000' }).map(asReturn)
+    expect(detectProductIssues(rs)).toEqual([])
+    const analytics = aggregateProductReturns(returns(5, 'TOO_SMALL', { phone: '0555000000' }))
+    expect(analytics.distinctCustomers).toBe(1)
+  })
+
+  it('relie les identités de proche en proche (téléphone puis e-mail)', () => {
+    const [a] = returns(1, 'TOO_SMALL', { sameCustomer: 'a@x.dz', phone: '0551' })
+    const [b] = returns(1, 'TOO_SMALL', { sameCustomer: 'b@x.dz', phone: '0551' })
+    const [c] = returns(1, 'TOO_SMALL', { sameCustomer: 'b@x.dz', phone: '0552' })
+    expect(aggregateProductReturns([a, b, c]).distinctCustomers).toBe(1)
+  })
+
+  it("n'utilise jamais les comptes liés au client comme preuve de son propre problème", () => {
+    // Le fraudeur : son retour, plus 3 comptes jetables liés par son téléphone.
+    // Deux vrais clients seulement : sous le seuil de 3 clients indépendants.
+    const own    = returns(1, 'TOO_SMALL', { sameCustomer: 'fraudeur@x.dz', phone: '0559' })
+    const sock   = returns(3, 'TOO_SMALL', { phone: '0559' })
+    const honest = returns(2, 'TOO_SMALL')
+    expect(explainReturns(own, [...own, ...sock, ...honest]).explained).toEqual([])
+  })
+
+  it('exclut une identité liée même par une réclamation qui ne compte pas comme preuve', () => {
+    const own   = returns(1, 'TOO_SMALL', { sameCustomer: 'f@x.dz', phone: '0559' })
+    // Le lien f ↔ g passe par une demande en attente (téléphone 0559)…
+    const link  = returns(1, 'TOO_SMALL', { sameCustomer: 'g@x.dz', phone: '0559', status: 'PENDING' })
+    // …et g signe ensuite des retours acceptés sous un autre téléphone.
+    const sock  = returns(2, 'TOO_SMALL', { sameCustomer: 'g@x.dz', phone: '0777' })
+    const honest = returns(2, 'TOO_SMALL')
+    expect(explainReturns(own, [...own, ...link, ...sock, ...honest]).explained).toEqual([])
+  })
+
+  it('ne retient comme preuve que des réclamations acceptées par le marchand', () => {
+    const own     = returns(1, 'TOO_SMALL')
+    const pending = returns(4, 'TOO_SMALL', { status: 'PENDING' })
+    const refused = returns(4, 'TOO_SMALL', { status: 'REJECTED' })
+    expect(explainReturns(own, [...own, ...pending, ...refused]).explained).toEqual([])
+
+    const accepted = returns(3, 'TOO_SMALL', { status: 'IN_PROGRESS' })
+    expect(explainReturns(own, [...own, ...pending, ...accepted]).explained).toHaveLength(1)
+  })
+
+  it("n'excuse jamais un retour du client que le marchand a refusé", () => {
+    const own    = returns(1, 'TOO_SMALL', { status: 'REJECTED' })
+    const others = returns(6, 'TOO_SMALL')
+    expect(explainReturns(own, [...own, ...others]).explained).toEqual([])
+  })
+
+  it("exclut aussi les identités portées par d'anciennes réclamations du client", () => {
+    // Le client évalué a utilisé autrefois un autre e-mail avec son téléphone :
+    // les retours signés de cet ancien e-mail sont aussi les siens.
+    const own    = returns(1, 'TOO_SMALL', { sameCustomer: 'nouveau@x.dz', phone: '0559' })
+    const older  = returns(1, 'TOO_SMALL', { sameCustomer: 'ancien@x.dz',  phone: '0559' })
+    const asOld  = returns(2, 'TOO_SMALL', { sameCustomer: 'ancien@x.dz' })
+    const honest = returns(2, 'TOO_SMALL')
+    expect(explainReturns([...own, ...older], [...own, ...asOld, ...honest]).explained).toEqual([])
   })
 })
