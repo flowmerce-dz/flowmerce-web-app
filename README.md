@@ -95,6 +95,8 @@ Toutes les variables ci-dessous sont **obligatoires** sauf mention contraire —
 | `CRON_SECRET` | ≥ 32 car. | Autorisation des jobs cron Vercel |
 | `NEXT_PUBLIC_BASE_URL` | URL | URL publique de base (exposée au client) |
 | `LOG_LEVEL` | *optionnel* | Niveau de log (`debug`/`info`/`warn`/`error`) |
+| `SMTP_HOST` | *optionnel, dev local* | Si défini, les emails partent vers ce serveur SMTP (Mailpit) au lieu de Gmail. **Jamais en production** |
+| `SMTP_PORT` | *optionnel*, défaut `1025` | Port du serveur SMTP local |
 
 `env` est exposé via un Proxy qui **lève une erreur si une variable serveur est lue depuis le bundle client** — seules les clés `NEXT_PUBLIC_*` y sont accessibles.
 
@@ -117,6 +119,52 @@ npm run db:generate   # Régénère le client Prisma
 ```
 
 > `postinstall` exécute automatiquement `prisma generate` après chaque `npm install`.
+
+---
+
+## Développement local avec Docker
+
+Environnement complet et **isolé de la production** : aucune action en local ne touche la base, le stockage, le ML ou les emails de production.
+
+| Service | Adresse | Rôle |
+|---|---|---|
+| `web` | http://localhost:3000 | Application Next.js, code monté depuis le poste (rechargement à chaud) |
+| `ml` | http://localhost:8000 | API ML construite depuis `../Flowmerce-ML` (rechargement à chaud) |
+| `db` | `localhost:5433` (`flowmerce` / `flowmerce`) | PostgreSQL 17 local |
+| `mailpit` | http://localhost:8025 | Boîte mail factice : tous les emails envoyés par l'app y arrivent |
+
+**Prérequis** : Docker Desktop démarré, et le dépôt `Flowmerce-ML` cloné à côté de celui-ci (`../Flowmerce-ML`, avec son `.env`).
+
+**Première installation**
+
+```bash
+cp .env.docker.example .env.docker.local   # puis générer les secrets (voir le fichier)
+# .env.remote.local : REMOTE_DATABASE_URL=<URL de la base à copier> (port 5432, session)
+npm run docker:up          # 1er démarrage : quelques minutes (images, npm ci, modèle ML)
+npm run docker:db:copy     # dans un 2e terminal : copie la base distante en local
+```
+
+**Au quotidien**
+
+```bash
+npm run docker:up          # démarre tout — Ctrl+C pour arrêter
+npm run docker:logs        # suivre les journaux
+npm run docker:down        # arrêter (les données locales sont conservées)
+npm run docker:db:copy     # rafraîchir la base locale depuis la base distante
+```
+
+**Garanties d'isolation**
+
+- Les adresses de la base, du ML, du SMTP et du stockage sont fixées dans `docker-compose.dev.yml` et priment sur les fichiers `.env`. Le conteneur `web` refuse de démarrer si sa base n'est pas la base locale.
+- La copie de la base est en **lecture seule** côté distant (`pg_dump`). Elle passe par un conteneur éphémère, et aucun fichier de données ne reste sur le poste.
+- Le stockage des documents est **désactivé** en local : l'upload et l'aperçu des documents vendeurs renvoient une erreur.
+- `.env.local` pointe lui aussi vers les services Docker : un `npm run dev` ou une commande `prisma` lancés hors Docker utilisent la base locale (`localhost:5433`).
+- Le cron Vercel (`/api/cron/retry-ml`) ne tourne pas en local. Pour le déclencher : `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/retry-ml`.
+
+**Bon à savoir**
+
+- Dans Docker, Next.js tourne avec **webpack** et non Turbopack. Sur un code monté depuis Windows, Turbopack ne détecte pas les modifications de fichiers. Une modification est prise en compte en 1 à 3 secondes (scrutation toutes les secondes, `WATCHPACK_POLLING`).
+- `Bind for 127.0.0.1:3000 failed: port is already allocated` : un autre conteneur ou un `npm run dev` occupe déjà le port. Pour voir lequel : `docker ps --format "{{.Names}} {{.Ports}}"`. Arrêtez-le, puis relancez avec `npm run docker:up`.
 
 ---
 

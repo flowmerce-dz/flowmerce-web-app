@@ -28,6 +28,12 @@ const ServerSchema = z.object({
   GMAIL_APP_PASSWORD: z
     .string()
     .min(16, "GMAIL_APP_PASSWORD must be at least 16 characters"),
+
+  // Développement local uniquement : quand SMTP_HOST est défini, les emails
+  // partent vers ce serveur SMTP (Mailpit dans docker-compose.dev.yml) au lieu
+  // de Gmail. Rien ne quitte alors la machine. Absent en production → Gmail.
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(1025),
 });
 
 const ClientSchema = z.object({

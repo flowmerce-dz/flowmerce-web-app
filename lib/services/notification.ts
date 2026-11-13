@@ -9,11 +9,11 @@
 //
 // Prérequis : public/logo-mark.png dans votre projet Next.js
 
-import nodemailer from 'nodemailer'
 import path       from 'path'
 import fs         from 'fs'
 import { env }    from '@/lib/env'
 import { log }    from '@/lib/logger'
+import { createMailTransport } from '@/lib/mailer'
 import type { VendorDecision } from '@/lib/constants'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -237,7 +237,6 @@ function buildEmailHtml(p: NotificationPayload): string {
 
 async function sendEmail(p: NotificationPayload): Promise<boolean> {
   const user = env.GMAIL_USER
-  const pass = env.GMAIL_APP_PASSWORD
 
   const cfg     = DECISION_CONFIG[p.aiDecision ?? p.status] ?? DECISION_CONFIG['IN_PROGRESS']
   const subject = p.aiDecision
@@ -264,10 +263,8 @@ async function sendEmail(p: NotificationPayload): Promise<boolean> {
     .filter(a => fs.existsSync(a.path))
 
   try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user, pass },
-    })
+    // Gmail en production, Mailpit en développement local (cf. lib/mailer.ts).
+    const transporter = createMailTransport()
 
     await transporter.sendMail({
       from:    `"Flowmerce" <${user}>`,   // Nom affiché dans la boîte mail

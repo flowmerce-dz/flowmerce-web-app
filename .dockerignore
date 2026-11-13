@@ -36,6 +36,8 @@ assets
 # ─── Docker ───────────────────────────────────────────────────────
 Dockerfile
 .dockerignore
+docker-compose*.yml
+docker
 
 # ─── Logs ─────────────────────────────────────────────────────────
 npm-debug.log*

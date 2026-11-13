@@ -15,7 +15,11 @@
     "test:run": "vitest run",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "docker:up": "docker compose -f docker-compose.dev.yml --env-file .env.docker.local up --build",
+    "docker:down": "docker compose -f docker-compose.dev.yml --env-file .env.docker.local down",
+    "docker:logs": "docker compose -f docker-compose.dev.yml --env-file .env.docker.local logs -f",
+    "docker:db:copy": "docker compose -f docker-compose.dev.yml --env-file .env.docker.local run --rm db-copy"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

@@ -23,8 +23,8 @@
 // ressource coûteuse (l'envoi) sans punir l'erreur de saisie.
 
 import { NextRequest, NextResponse } from 'next/server'
-import nodemailer from 'nodemailer'
 import { z } from 'zod'
+import { createMailTransport } from '@/lib/mailer'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
@@ -83,13 +83,10 @@ export async function POST(req: NextRequest) {
   }
 
   const user = env.GMAIL_USER
-  const pass = env.GMAIL_APP_PASSWORD
 
   try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user, pass },
-    })
+    // Gmail en production, Mailpit en développement local (cf. lib/mailer.ts).
+    const transporter = createMailTransport()
 
     await transporter.sendMail({
       from:    `"Flowmerce contact" <${user}>`,

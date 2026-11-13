@@ -1,0 +1,128 @@
+# ═══════════════════════════════════════════════════════════════
+#  Flowmerce — environnement de DÉVELOPPEMENT local, isolé de la production
+#
+#    npm run docker:up        démarre tout (web, ml, db, mailpit)
+#    npm run docker:db:copy   recopie la base distante dans la base locale
+#    npm run docker:down      arrête tout (les données locales sont conservées)
+#
+#    http://localhost:3000    application web (rechargement à chaud)
+#    http://localhost:8000    API ML (../Flowmerce-ML, rechargement à chaud)
+#    http://localhost:8025    Mailpit — tous les emails envoyés par l'app
+#    localhost:5433           PostgreSQL local (flowmerce / flowmerce)
+#
+#  Rien ici ne pointe vers la production : base locale, ML local, emails
+#  capturés par Mailpit, stockage des documents désactivé. Les valeurs qui
+#  garantissent cette isolation sont fixées dans `environment:` ci-dessous et
+#  priment sur .env.docker.local. Voir le README, « Développement local avec Docker ».
+#
+#  Ports publiés sur 127.0.0.1 uniquement : rien n'est exposé au réseau local.
+# ═══════════════════════════════════════════════════════════════
+name: flowmerce-dev
+
+services:
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: flowmerce
+      POSTGRES_PASSWORD: flowmerce
+      POSTGRES_DB: flowmerce
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowmerce -d flowmerce"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:8025:8025"   # interface web
+      - "127.0.0.1:1025:1025"   # SMTP (pour `npm run dev` lancé hors Docker)
+    restart: unless-stopped
+
+  ml:
+    build: ../Flowmerce-ML
+    command: ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    env_file:
+      - ../Flowmerce-ML/.env          # HF_REPO_ID, HF_TOKEN… (lecture des modèles)
+    environment:
+      # Secret partagé avec `web`, propre à cet environnement local.
+      INTERNAL_API_KEY: ${ML_INTERNAL_SECRET:?ML_INTERNAL_SECRET manquant dans .env.docker.local}
+      ENVIRONMENT: development
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Code monté pour le rechargement à chaud (uvicorn --reload).
+      - ../Flowmerce-ML/api:/app/api
+      - ../Flowmerce-ML/src:/app/src
+      - ../Flowmerce-ML/contracts:/app/contracts
+      - ../Flowmerce-ML/config.py:/app/config.py
+      # /save_claim écrit ici : le dataset reste dans Docker, hors du dépôt ML.
+      - ml-data:/app/data/raw
+      - ml-hf-cache:/app/.cache/huggingface
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/dev/web.Dockerfile
+    env_file:
+      - .env.docker.local             # secrets locaux (session, cron, ML)
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://flowmerce:flowmerce@db:5432/flowmerce
+      DIRECT_URL: postgresql://flowmerce:flowmerce@db:5432/flowmerce
+      ML_API_URL: http://ml:8000
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      # Stockage des documents désactivé en local : adresse volontairement
+      # injoignable, jamais le bucket de production.
+      SUPABASE_URL: http://storage-disabled.invalid
+      SUPABASE_SERVICE_ROLE_KEY: storage-disabled
+      NEXT_PUBLIC_BASE_URL: http://localhost:3000
+      AUTH_TRUST_HOST: "true"
+      # Le code est monté depuis Windows : les notifications de fichiers ne
+      # traversent pas le montage : webpack (cf. web-entrypoint.sh) scrute donc
+      # les fichiers toutes les 1000 ms (« true » seul = toutes les 5 s).
+      WATCHPACK_POLLING: "1000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - .:/app
+      # Dépendances et cache de build Linux, séparés de ceux du poste Windows.
+      - web-node-modules:/app/node_modules
+      - web-next:/app/.next
+    depends_on:
+      db:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+      ml:
+        condition: service_started
+    restart: unless-stopped
+
+  # Outil ponctuel (npm run docker:db:copy) — ne démarre pas avec `up`.
+  db-copy:
+    image: postgres:17-alpine
+    profiles: ["tools"]
+    env_file:
+      - path: .env.remote.local       # REMOTE_DATABASE_URL (lecture seule)
+        required: false               # absent → le script s'arrête avec un message clair
+    volumes:
+      - ./docker/dev/db-copy.sh:/db-copy.sh:ro
+    entrypoint: ["sh", "/db-copy.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  web-node-modules:
+  web-next:
+  ml-data:
+  ml-hf-cache:

@@ -102,6 +102,32 @@ describe('env', () => {
     })
   })
 
+  describe('SMTP local (Mailpit)', () => {
+    afterEach(() => {
+      delete process.env.SMTP_HOST
+      delete process.env.SMTP_PORT
+    })
+
+    it('laisse SMTP_HOST absent par défaut (envoi via Gmail)', async () => {
+      setEnv(validEnv())
+      const mod: EnvModule = await import('@/lib/env')
+      expect(mod.env.SMTP_HOST).toBeUndefined()
+      expect(mod.env.SMTP_PORT).toBe(1025)
+    })
+
+    it('lit SMTP_HOST et convertit SMTP_PORT en nombre', async () => {
+      setEnv({ ...validEnv(), SMTP_HOST: 'mailpit', SMTP_PORT: '2525' })
+      const mod: EnvModule = await import('@/lib/env')
+      expect(mod.env.SMTP_HOST).toBe('mailpit')
+      expect(mod.env.SMTP_PORT).toBe(2525)
+    })
+
+    it('rejette un SMTP_PORT non numérique', async () => {
+      setEnv({ ...validEnv(), SMTP_PORT: 'abc' })
+      await expect(import('@/lib/env')).rejects.toThrow()
+    })
+  })
+
   describe('validation ML_API_URL', () => {
     it('rejette une URL invalide', async () => {
       const vars = validEnv()
