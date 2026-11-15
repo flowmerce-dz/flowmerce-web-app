@@ -20,6 +20,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { prisma }         from '@/lib/prisma'
 import { validateApiKey } from '@/lib/api-key-auth'
+import { isServiceEnabled, serviceDisabledResponse } from '@/lib/services/vendor-services'
 import type { SubmissionContext, SubmissionPrefill } from '@/lib/services/return-submission'
 
 export type ResolveResult =
@@ -98,6 +99,11 @@ async function resolveFromSession(token: string): Promise<ResolveResult> {
   const apiKey = session.vendor
   if (!apiKey.isActive || apiKey.vendor.status !== 'APPROVED') {
     return { ok: false, response: NextResponse.json({ error: 'Clé API invalide ou compte non approuvé.' }, { status: 403 }) }
+  }
+  // Même règle que pour une clé API (validateApiKey) : un lien de retour émis
+  // avant la désactivation de Retours-ML ne permet plus de soumettre.
+  if (!isServiceEnabled(apiKey.vendor, 'returnsML')) {
+    return { ok: false, response: serviceDisabledResponse('returnsML') }
   }
 
   const prefill: SubmissionPrefill = {

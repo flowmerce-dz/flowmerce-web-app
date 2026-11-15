@@ -99,6 +99,7 @@ Toutes les variables ci-dessous sont **obligatoires** sauf mention contraire —
 | `LOG_LEVEL` | *optionnel* | Niveau de log (`debug`/`info`/`warn`/`error`) |
 | `SMTP_HOST` | *optionnel, dev local* | Si défini, les emails partent vers ce serveur SMTP (Mailpit) au lieu de Gmail. **Jamais en production** |
 | `SMTP_PORT` | *optionnel*, défaut `1025` | Port du serveur SMTP local |
+| `ORDER_TRACKING_SECRET_KEY` | *optionnel*, ≥ 32 car. | Clé de chiffrement des secrets webhook du suivi des commandes. Absente : la génération de secrets est refusée (donc aucun webhook accepté), le reste de l'application démarre normalement. **Ne jamais la changer une fois des secrets générés** — ils deviendraient indéchiffrables |
 
 `env` est exposé via un Proxy qui **lève une erreur si une variable serveur est lue depuis le bundle client** — seules les clés `NEXT_PUBLIC_*` y sont accessibles.
 
@@ -248,6 +249,14 @@ Les modèles principaux de la base de données :
 | `RefusalReport` | Signalement de refus par un vendeur (unique sur `vendorId + orderId`) |
 | `ReturnRateLimit` | Compteurs de rate limiting persistés en base |
 | `PredictionLog` | Journal d'audit du modèle ML |
+| `OrderTrackingConfig` | Réglages du suivi par boutique : secret webhook chiffré, statuts déclarés par la boutique, statuts notifiés, canal, langue, messages |
+| `Order` | Commande suivie (unique sur `vendorId + externalId`), statut courant normalisé |
+| `OrderStatusEvent` | Historique des changements de statut (unique sur `vendorId + eventId` — idempotence) |
+| `StoreStatusMapping` | Correspondance statut de la boutique → statut normalisé (unique sur `vendorId + normalizedKey`) |
+| `NotificationJob` | File d'envoi des notifications (PENDING / PROCESSING / SENT / FAILED, tentatives, relance) |
+| `WebhookLog` | Journal des webhooks reçus, acceptés ou refusés |
+
+`Vendor` porte l'activation des services : `returnsMLEnabled` (défaut `true`) et `orderTrackingEnabled` (défaut `false`).
 
 ---
 
@@ -635,6 +644,159 @@ X-Return-Token: ret_<token>
 ```
 
 Les clés API sont générées depuis le dashboard vendeur (`/dashboard/api-keys`). Chaque clé trace sa dernière utilisation (`lastUsedAt`) et peut être révoquée individuellement.
+
+---
+
+## Services : Retours-ML et suivi des commandes
+
+Flowmerce propose deux services **indépendants**. Une boutique active l'un, l'autre, les deux ou aucun (`/dashboard/services`, `PATCH /api/vendors/services`).
+
+| Suivi | Retours-ML | Configuration |
+|---|---|---|
+| OFF | OFF | Aucun service |
+| ON | OFF | Suivi uniquement |
+| OFF | ON | Retours-ML uniquement |
+| ON | ON | Les deux services |
+
+- Chaque service a son drapeau sur `Vendor` et sa propre configuration (`ReturnPolicy` / `OrderTrackingConfig`). `lib/services/vendor-services.ts` est le seul endroit qui lit ces drapeaux ; aucune règle n'y relie un service à l'autre.
+- La clé API identifie la boutique, pas un service. `validateApiKey(clé, { service })` répond `403 SERVICE_DISABLED` si le service de la route appelée n'est pas activé.
+- Désactiver un service coupe ses API et ses pages sans rien supprimer : configuration et données sont retrouvées à la réactivation.
+- Les routes de session de Retours-ML (décision sur une réclamation, politique de retour) ne sont pas conditionnées au drapeau : elles n'agissent que sur les données de la boutique connectée, et leurs pages ne sont plus accessibles une fois le service désactivé.
+
+## Suivi des commandes
+
+Module `lib/order-tracking/` — aucun import depuis le code de Retours-ML, aucune lecture de `ReturnPolicy` ni de `Claim`.
+
+Documentation publique : `/docs/suivi` (marchand) et `/docs/developpeurs/suivi` (développeur). La navigation de `/docs` range les pages par service (Retours, Suivi des commandes), puis par public.
+
+### Modes d'intégration
+
+La façon dont les changements de statut arrivent chez Flowmerce. Tout ce qui suit la réception est identique dans les trois modes : normalisation du statut, idempotence, chronologie, file de notifications (`lib/order-tracking/ingest.ts`).
+
+| Mode | Qui appelle qui | Code |
+|---|---|---|
+| `WEBHOOK` (défaut) | La boutique envoie chaque changement à Flowmerce | `webhook.ts` |
+| `POLLING` | Flowmerce interroge une URL de la boutique | `polling.ts`, `pull.ts` |
+| `CONNECTOR` | Flowmerce lit un service tiers avec les identifiants de la boutique | `connectors.ts`, `pull.ts` |
+
+- **Un seul mode actif par boutique** (`OrderTrackingConfig.integrationMode`). Deux sources simultanées décriraient le même changement sous deux identifiants : le client serait prévenu deux fois. En mode polling ou connecteur, un webhook est donc refusé (`403 INTEGRATION_MODE_MISMATCH`).
+- Le journal du tableau de bord (`WebhookLog`) reçoit les lignes des trois modes ; la colonne `source` les distingue.
+
+### Polling
+
+```
+GET <URL de la boutique>?since=<ISO-8601>&limit=100[&cursor=<curseur>]
+Authorization: Bearer <jeton>           si la boutique en a défini un
+
+200 { "events": [ { "event_id"?, "order_id", "status", "updated_at", … } ],
+      "has_more": false, "next_cursor": null }
+```
+
+- Chaque élément de `events` a le format du corps du webhook. `event_id` est facultatif : sans lui, l'identifiant est une empreinte de `(order_id, status, updated_at)`, de sorte que relire la même ligne ne crée rien.
+- `since` est la date du dernier changement lu ; au premier passage, le moment où le polling a été branché. **Un changement antérieur au branchement est enregistré mais jamais annoncé au client** : brancher une boutique ne réexpédie pas son historique.
+- L'URL est saisie par le vendeur et appelée depuis le réseau de Flowmerce. En production : HTTPS, hôte public, aucune redirection suivie, 10 s et 1 Mo au plus. Le nom n'est résolu qu'une fois et la connexion est forcée vers les adresses contrôlées (`pinned-http.ts`) : un nom qui change de cible entre le contrôle et la connexion ne permet pas d'atteindre le réseau interne. Hors production, HTTP et `localhost` sont admis pour brancher une boutique locale.
+- Le jeton est chiffré comme le secret webhook (`ORDER_TRACKING_SECRET_KEY`) et n'est jamais renvoyé au navigateur.
+- Un verrou par boutique (`pullLockedAt`) empêche deux synchronisations simultanées ; un verrou de plus de 5 minutes est repris. La position de lecture (`pullCursor`) est enregistrée à chaque passage, réussi ou non.
+
+Déclenchement :
+
+- `GET /api/cron/order-polling` (`Authorization: Bearer <CRON_SECRET>`) synchronise les boutiques en mode polling ou connecteur, puis envoie les notifications en attente.
+- **Fréquence** : `vercel.json` déclare ce cron une fois par jour, seule fréquence acceptée par l'offre Vercel Hobby. Pour un suivi rapproché, faire appeler la même URL toutes les 5 à 10 minutes par un ordonnanceur externe (cron-job.org, GitHub Actions…) muni de `CRON_SECRET`, ou passer le cron à `*/5 * * * *` sur une offre qui le permet.
+- `POST /api/order-tracking/sync` (session) : bouton « Synchroniser maintenant » du tableau de bord.
+
+### Connecteurs
+
+`lib/order-tracking/connectors.ts` définit l'interface d'un connecteur (`pull(credentials, { since, cursor })` → page d'événements au format du webhook) et le catalogue. La boucle de synchronisation est celle du polling. **Aucun connecteur n'est branché** : ceux du catalogue (Yalidine, Shopify, WooCommerce) sont annoncés comme à venir et ne peuvent pas être sélectionnés. En ajouter un = l'ajouter à `CONNECTORS` avec `isAvailable`, ses champs d'identifiants et sa fonction `pull` ; le formulaire d'identifiants du tableau de bord reste à écrire à ce moment-là.
+
+### Webhook
+
+```
+POST /api/v1/webhooks/orders
+X-Flowmerce-Key:        flk_…                 clé API de la boutique
+X-Flowmerce-Event-Id:   evt_8f1c…             identifiant unique de l'événement
+X-Flowmerce-Timestamp:  1794676800            secondes Unix de l'envoi
+X-Flowmerce-Signature:  sha256=<hex>          HMAC-SHA256(secret, `${timestamp}.${eventId}.${corps brut}`)
+```
+
+```json
+{
+  "order_id": "CABA-10452",
+  "status": "Expédiée",
+  "updated_at": "2026-11-14T17:20:00Z",
+  "customer": { "name": "Amine B.", "email": "amine@example.com", "phone": "+213550000000", "language": "fr" },
+  "tracking_number": "YAL-123456",
+  "carrier": "yalidine",
+  "tracking_url": "https://…",
+  "items": [{ "sku": "CHS-39-NOIR", "name": "Chaussure X", "qty": 1 }]
+}
+```
+
+`order_id`, `status` et `updated_at` sont obligatoires. `customer.language` (`fr` / `ar`) et `tracking_url` sont facultatifs ; les champs inconnus sont ignorés. La signature porte sur le corps **exact** de la requête : la calculer sur la chaîne envoyée, pas sur un objet re-sérialisé.
+
+```js
+const crypto = require('crypto')
+const body      = JSON.stringify(event)
+const timestamp = String(Math.floor(Date.now() / 1000))
+const signature = crypto.createHmac('sha256', WEBHOOK_SECRET)
+  .update(`${timestamp}.${eventId}.${body}`).digest('hex')
+```
+
+| Code | Signification | À faire côté boutique |
+|---|---|---|
+| `200` | Événement enregistré (`outcome` : `processed`, `stale`, `unmapped`) | Rien |
+| `400` | En-têtes ou corps invalides | Corriger l'envoi |
+| `401` | Clé API ou signature invalide, horodatage à plus de 5 minutes | Vérifier clé, secret et horloge |
+| `403` | Suivi non activé, boutique dans un autre mode d'intégration, ou secret webhook non généré | Activer / configurer |
+| `409` | Événement déjà reçu (`DUPLICATE_EVENT`) | Le considérer comme livré, **ne pas le renvoyer** |
+| `500` | Erreur interne | Renvoyer plus tard, avec le même `Event-Id` |
+
+### Statuts propres à chaque boutique
+
+Toutes les boutiques n'ont pas les mêmes statuts de commande. Chaque boutique déclare les siens, sous ses propres libellés — ceux qu'elle envoie dans le champ `status` du webhook :
+
+```
+PUT /api/v1/order-statuses
+X-Flowmerce-Key: flk_…
+
+{ "statuses": ["En attente", "Confirmée", "En préparation", "Expédiée", "Livrée", "Annulée"] }
+```
+
+- La liste transmise **remplace** la précédente : la boutique envoie toujours sa liste complète (50 libellés au plus). Une liste vide annule la déclaration. `GET` sur la même route la relit.
+- La réponse donne, pour chaque libellé, son statut normalisé ; `mapped: false` signale un libellé à associer dans le tableau de bord.
+- Le tableau de bord ne propose alors au vendeur que les statuts de sa boutique, nommés comme elle les nomme (notifications, messages). Sans déclaration, tous les statuts standards sont proposés.
+- Un statut déjà reçu par webhook reste proposé même s'il manque à la déclaration.
+- La déclaration ne restreint pas le webhook : un statut non déclaré est accepté et normalisé comme les autres.
+
+Aucune liste de boutique n'est codée dans Flowmerce (`lib/order-tracking/store-statuses.ts`).
+
+### Garanties
+
+- **Idempotence** : un événement est identifié par `(boutique, Event-Id)`. Reçu deux fois, il ne crée ni second historique ni seconde notification — la contrainte d'unicité tranche aussi deux envois simultanés.
+- **Chronologie** : le statut courant ne régresse jamais. Un événement dont `updated_at` précède celui du statut courant est conservé dans l'historique (`applied = false`) sans effet et sans notification.
+- **Statuts** : le statut transmis est un libellé libre, ramené à un statut normalisé (`PENDING`, `CONFIRMED`, `PREPARING`, `SHIPPED`, `OUT_FOR_DELIVERY`, `DELIVERED`, `FAILED_DELIVERY`, `RETURNED`, `CANCELLED`) par les correspondances de la boutique, puis par les correspondances par défaut. Sans correspondance : `UNMAPPED`, présenté au vendeur pour configuration.
+- **Transaction** : commande, événement et travail de notification sont écrits ensemble, ou pas du tout.
+- **Secret** : chiffré en AES-256-GCM, révélé une seule fois à la génération, jamais renvoyé au navigateur.
+
+### Notifications
+
+Aucun envoi n'a lieu dans la requête du webhook : un `NotificationJob` est mis en file, puis pris en charge par le worker (`lib/order-tracking/worker.ts`).
+
+- Prise en charge exclusive par mise à jour conditionnelle : deux workers ne peuvent pas obtenir le même travail.
+- Relances à 1 min, 5 min, 30 min, 2 h ; `FAILED` après 5 tentatives. Un travail resté `PROCESSING` plus de 10 minutes est repris.
+- Le worker est réveillé après chaque webhook accepté (une fois la réponse rendue) et par `GET /api/cron/order-notifications` (`Authorization: Bearer <CRON_SECRET>`).
+- **Fréquence du cron** : `vercel.json` le déclare une fois par jour, seule fréquence acceptée par l'offre Vercel Hobby. Sans autre webhook entrant, une relance peut donc attendre jusqu'à 24 h. Sur une offre qui le permet, passer à `* * * * *`, ou faire appeler la route par un ordonnanceur externe.
+- Canal : e-mail (transport SMTP de la plateforme). `lib/order-tracking/channels.ts` définit l'interface d'un canal ; WhatsApp y est déclaré mais indisponible tant qu'aucun fournisseur n'est branché.
+- Messages par statut et par langue (français, arabe), personnalisables. Variables : `{{customer_name}}`, `{{order_id}}`, `{{status}}`, `{{tracking_number}}`, `{{carrier}}`, `{{tracking_url}}`, `{{shop_name}}`.
+
+### Configurer une boutique
+
+1. Définir `ORDER_TRACKING_SECRET_KEY` sur le déploiement (une fois).
+2. Tableau de bord → **Intégration → Suivi des commandes** → *Activer le suivi*.
+3. Choisir le **mode d'intégration**. Webhook : *Générer* le secret de signature et le copier — il n'est affiché qu'une fois. Polling : enregistrer l'URL de la boutique et son jeton, puis *Utiliser le mode polling*.
+4. Créer une clé API (`/dashboard/api-keys`) si la boutique n'en a pas.
+5. Côté boutique : en webhook, envoyer chaque changement de statut à l'URL du webhook, signé comme ci-dessus ; en polling, exposer l'URL décrite plus haut.
+6. Cocher les statuts qui préviennent le client, choisir la langue, ajuster les messages.
+7. *Envoyer un test*, puis déclarer les statuts signalés comme non reconnus.
 
 ---
 

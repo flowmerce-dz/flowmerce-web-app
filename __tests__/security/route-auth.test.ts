@@ -34,9 +34,17 @@ const ROUTES: Record<string, AuthModel> = {
   'claims/[claimId]':             'session',
   'claims/validation-mode':       'session',
   'contact':                      'public',
+  'cron/order-notifications':     'cron',
+  'cron/order-polling':           'cron',
   'cron/retry-ml':                'cron',
   'fraud/report-refusal':         'api-key',
   'health':                       'public',
+  // Suivi des commandes — réglages du tableau de bord.
+  'order-tracking/activity':      'session',
+  'order-tracking/secret':        'session',
+  'order-tracking/settings':      'session',
+  'order-tracking/sync':          'session',
+  'order-tracking/test':          'session',
   'predict':                      'api-key',
   'return-policy':                'session',
   'return-policy/advanced':       'session',
@@ -45,8 +53,12 @@ const ROUTES: Record<string, AuthModel> = {
   'return-sessions':              'api-key',
   'return/[token]':               'public',
   'return/[token]/vendor-info':   'public',
+  // Suivi des commandes — statuts déclarés par la boutique.
+  'v1/order-statuses':            'api-key',
   'v1/return-form':               'api-key',
   'v1/returns':                   'partner',
+  // Suivi des commandes — clé API de la boutique, puis signature HMAC.
+  'v1/webhooks/orders':           'api-key',
   'vendors/[vendorId]':           'session-admin',
   'vendors/create-profile':       'session',
   'vendors/documents':            'session',
@@ -54,6 +66,7 @@ const ROUTES: Record<string, AuthModel> = {
   'vendors/documents/view':       'session',
   'vendors/me':                   'session',
   'vendors/register':             'public',
+  'vendors/services':             'session',
 }
 
 const API_DIR = join(process.cwd(), 'app', 'api')

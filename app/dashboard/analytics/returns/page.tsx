@@ -49,7 +49,7 @@ export default async function ReturnsTablePage({
     page?:    string | string[]
   }>
 }) {
-  await checkVendorAccess()
+  await checkVendorAccess({ service: 'returnsML' })
   const session = await getSessionServer()
   if (!session) redirect('/auth/login')
 

@@ -71,11 +71,31 @@ model Vendor {
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   vendorCategories   String[]       @default([])
+
+  // ── Services activés ──────────────────────────────────────────────────────
+  // Deux services indépendants : l'activation de l'un ne dit rien de l'autre,
+  // et aucun ne dépend de la configuration de l'autre (ReturnPolicy pour
+  // Retours-ML, OrderTrackingConfig pour le suivi).
+  //
+  // `returnsMLEnabled` vaut `true` par défaut : c'était le comportement
+  // implicite avant l'introduction des services, et les boutiques existantes
+  // ne doivent rien voir changer. Le suivi, lui, s'active explicitement.
+  returnsMLEnabled     Boolean @default(true)
+  orderTrackingEnabled Boolean @default(false)
+
   apiKeys            ApiKey[]
   claims             Claim[]
   documents          Document[]
   returnPolicy       ReturnPolicy?
   user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Service de suivi des commandes (lib/order-tracking).
+  orderTrackingConfig OrderTrackingConfig?
+  orders              Order[]
+  orderStatusEvents   OrderStatusEvent[]
+  statusMappings      StoreStatusMapping[]
+  notificationJobs    NotificationJob[]
+  webhookLogs         WebhookLog[]
 
   @@index([status])
 }
@@ -345,6 +365,231 @@ model RefusalReport {
   @@index([createdAt])
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+//  Service de suivi des commandes (Order Tracking)
+//
+//  Module indépendant de Retours-ML : aucun de ces modèles ne référence une
+//  réclamation, une politique de retour ou une prédiction. La boutique est le
+//  `Vendor` existant — il n'y a pas de second modèle de boutique.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Paramètres du suivi propres à une boutique. Créée à la première
+// configuration ; son absence ne bloque rien d'autre que la réception des
+// webhooks (pas de secret → pas de signature vérifiable).
+model OrderTrackingConfig {
+  id       String @id @default(cuid())
+  vendorId String @unique
+
+  // Secret de signature des webhooks, chiffré en AES-256-GCM
+  // (lib/order-tracking/crypto.ts). Il ne peut pas être haché comme une clé
+  // API : le HMAC se recalcule avec la valeur en clair. Elle n'est rendue au
+  // vendeur qu'une fois, à la génération ; seul le préfixe reste affichable.
+  webhookSecretEnc       String?
+  webhookSecretPrefix    String?
+  webhookSecretCreatedAt DateTime?
+
+  // Source des changements de statut. Une seule est active à la fois : deux
+  // sources simultanées annonceraient deux fois le même changement au client.
+  //   WEBHOOK    la boutique envoie chaque changement à Flowmerce ;
+  //   POLLING    Flowmerce interroge une URL de la boutique à intervalle régulier ;
+  //   CONNECTOR  Flowmerce lit les statuts chez un service tiers
+  //              (lib/order-tracking/connectors.ts).
+  integrationMode TrackingIntegrationMode @default(WEBHOOK)
+
+  // Polling. Le jeton envoyé à la boutique est chiffré comme le secret webhook
+  // et n'est jamais renvoyé au tableau de bord.
+  pollingUrl      String?
+  pollingTokenEnc String?
+  // Connecteur choisi et ses identifiants (JSON chiffré).
+  connectorId             String?
+  connectorCredentialsEnc String?
+
+  // État de la synchronisation, commun au polling et aux connecteurs.
+  // `pullStartedAt` : moment où la source a été branchée. Un changement
+  // antérieur est enregistré mais n'est jamais annoncé au client — une première
+  // synchronisation ne doit pas réexpédier l'historique de la boutique.
+  pullStartedAt  DateTime?
+  pullCursor     String?
+  // Posé pendant une synchronisation ; un verrou trop ancien est repris.
+  pullLockedAt   DateTime?
+  pullLastRunAt  DateTime?
+  pullLastOk     Boolean?
+  pullLastError  String?
+  pullLastEvents Int?
+
+  // Statuts de commande qui existent dans la boutique, tels qu'elle les a
+  // déclarés (PUT /api/v1/order-statuses) : ses propres libellés, pas des
+  // statuts normalisés. Le tableau de bord ne présente au vendeur que ceux-là.
+  // Vide : la boutique n'a rien déclaré, tous les statuts standards sont
+  // proposés.
+  storeStatuses           String[]  @default([])
+  storeStatusesDeclaredAt DateTime?
+
+  // Statuts normalisés qui déclenchent une notification au client.
+  notifyStatuses      OrderStatus[]       @default([])
+  notificationChannel NotificationChannel @default(EMAIL)
+  // Langue des messages quand le webhook n'en précise pas : 'fr' ou 'ar'.
+  defaultLanguage     String              @default("fr")
+  // Messages personnalisés : { [OrderStatus]: { fr?: {subject, body}, ar?: … } }.
+  // Absent ou incomplet → modèles par défaut (lib/order-tracking/templates.ts).
+  messageTemplates    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+}
+
+// Commande suivie. Identifiée par la boutique et son identifiant externe : une
+// commande n'existe jamais deux fois pour une même boutique.
+model Order {
+  id         String @id @default(cuid())
+  vendorId   String
+  externalId String
+
+  // Statut courant, normalisé. Ne régresse jamais : seul un événement plus
+  // récent que `statusUpdatedAt` peut le remplacer.
+  status          OrderStatus @default(UNMAPPED)
+  // Statut tel que la boutique l'a transmis pour l'événement courant.
+  rawStatus       String
+  // `updated_at` de l'événement qui a fixé le statut courant.
+  statusUpdatedAt DateTime
+
+  customerName     String?
+  customerEmail    String?
+  customerPhone    String?
+  // Langue du client transmise par la boutique ('fr' / 'ar'), si connue.
+  customerLanguage String?
+
+  trackingNumber String?
+  carrier        String?
+  trackingUrl    String?
+  items          Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor           Vendor             @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  events           OrderStatusEvent[]
+  notificationJobs NotificationJob[]
+
+  @@unique([vendorId, externalId])
+  @@index([vendorId, status])
+  @@index([vendorId, updatedAt(sort: Desc)])
+}
+
+// Historique des changements de statut — une ligne par événement reçu, y
+// compris ceux arrivés en retard, qui sont conservés sans être appliqués.
+model OrderStatusEvent {
+  id       String @id @default(cuid())
+  vendorId String
+  orderId  String
+  // Identifiant de l'événement fourni par la boutique (X-Flowmerce-Event-Id).
+  // Unique par boutique : c'est la garantie d'idempotence du webhook.
+  eventId  String
+
+  status     OrderStatus
+  rawStatus  String
+  // Date du changement côté boutique (`updated_at` du corps).
+  occurredAt DateTime
+  receivedAt DateTime @default(now())
+  // `false` : événement conservé pour l'historique mais sans effet sur le
+  // statut courant (arrivé en retard, ou statut non reconnu).
+  applied    Boolean  @default(true)
+
+  vendor          Vendor           @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  notificationJob NotificationJob?
+
+  @@unique([vendorId, eventId])
+  @@index([orderId, occurredAt])
+  @@index([vendorId, status])
+}
+
+// Correspondance entre un statut propre à la boutique et un statut normalisé.
+// Complète les correspondances par défaut et prime sur elles.
+model StoreStatusMapping {
+  id             String      @id @default(cuid())
+  vendorId       String
+  // Libellé tel que saisi ou reçu, pour l'affichage.
+  externalStatus String
+  // Clé de comparaison : minuscules, sans accents ni ponctuation.
+  normalizedKey  String
+  status         OrderStatus
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorId, normalizedKey])
+}
+
+// File d'envoi des notifications. Jamais d'envoi dans la requête du webhook :
+// le travail est créé dans la même transaction que l'événement, puis pris en
+// charge par le worker (lib/order-tracking/worker.ts).
+model NotificationJob {
+  id       String @id @default(cuid())
+  vendorId String
+  orderId  String
+  // Un événement ne produit jamais plus d'une notification.
+  eventId  String @unique
+
+  channel     NotificationChannel
+  status      NotificationJobStatus @default(PENDING)
+  orderStatus OrderStatus
+  recipient   String
+  language    String                @default("fr")
+
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(5)
+  nextAttemptAt DateTime  @default(now())
+  // Posé à la prise en charge par un worker ; un verrou trop ancien est
+  // considéré comme abandonné et le travail est repris.
+  lockedAt      DateTime?
+  lastError     String?
+  sentAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor Vendor           @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  order  Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  event  OrderStatusEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([vendorId, createdAt(sort: Desc)])
+}
+
+// Journal des webhooks reçus pour une boutique identifiée, acceptés ou non.
+// Ne contient ni le corps de la requête ni de donnée client.
+model WebhookLog {
+  id       String @id @default(cuid())
+  vendorId String
+
+  eventId         String?
+  externalOrderId String?
+  rawStatus       String?
+  // Mode d'intégration par lequel la ligne est arrivée.
+  source     TrackingIntegrationMode @default(WEBHOOK)
+  // PROCESSED, STALE, UNMAPPED, DUPLICATE, INVALID_SIGNATURE,
+  // INVALID_TIMESTAMP, INVALID_PAYLOAD, NOT_CONFIGURED, TEST_OK, ERROR,
+  // WRONG_MODE (webhook reçu alors qu'une autre source est active),
+  // PULL_ERROR (synchronisation en échec : `httpStatus` est la réponse de la
+  // boutique, ou 0 si elle n'a pas répondu).
+  outcome    String
+  httpStatus Int
+  error      String?
+  // Webhook de test envoyé depuis le tableau de bord : n'écrit aucune commande.
+  isTest     Boolean  @default(false)
+  durationMs Int?
+  receivedAt DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, receivedAt(sort: Desc)])
+}
+
 enum Role {
   ADMIN
   VENDOR
@@ -401,4 +646,39 @@ enum DecisionSource {
   MODEL
   POLICY_RULE
   HUMAN
+}
+
+// Statuts normalisés d'une commande suivie.
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  SHIPPED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED_DELIVERY
+  RETURNED
+  CANCELLED
+  // Statut transmis par la boutique sans correspondance connue.
+  UNMAPPED
+}
+
+enum NotificationChannel {
+  EMAIL
+  // Prévu, sans fournisseur branché pour l'instant.
+  WHATSAPP
+}
+
+enum NotificationJobStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+// Mode d'intégration du suivi des commandes : d'où viennent les statuts.
+enum TrackingIntegrationMode {
+  WEBHOOK
+  POLLING
+  CONNECTOR
 }

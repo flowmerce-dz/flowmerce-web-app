@@ -34,6 +34,15 @@ const ServerSchema = z.object({
   // de Gmail. Rien ne quitte alors la machine. Absent en production → Gmail.
   SMTP_HOST: z.string().min(1).optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),
+
+  // Service de suivi des commandes : clé de chiffrement des secrets webhook
+  // (lib/order-tracking/crypto.ts). Facultative à dessein : son absence
+  // désactive la génération de secrets, donc la réception des webhooks, mais
+  // ne doit jamais empêcher l'application — et Retours-ML — de démarrer.
+  ORDER_TRACKING_SECRET_KEY: z
+    .string()
+    .min(32, "ORDER_TRACKING_SECRET_KEY must be at least 32 characters")
+    .optional(),
 });
 
 const ClientSchema = z.object({

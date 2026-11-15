@@ -17,7 +17,7 @@ export default async function ClaimDetailPage({
 }: {
   params: Promise<{ claimId: string }>
 }) {
-  await checkVendorAccess()
+  await checkVendorAccess({ service: 'returnsML' })
   const session = await getSessionServer()
   if (!session) redirect('/auth/login')
 

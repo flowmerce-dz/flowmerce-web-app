@@ -40,7 +40,7 @@ export default async function ClaimsPage({
     page?:     string
   }>
 }) {
-  await checkVendorAccess()
+  await checkVendorAccess({ service: 'returnsML' })
   const session = await getSessionServer()
   if (!session) redirect('/auth/login')
 

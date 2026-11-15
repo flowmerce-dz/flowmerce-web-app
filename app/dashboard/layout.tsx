@@ -6,6 +6,8 @@ import { SignOutButton } from "@/components/layout/SignOutButton";
 import { DashboardNav } from "@/components/layout/DashboardNav";
 import { SidebarShell } from "@/components/layout/SidebarShell";
 import { SessionProvider } from "next-auth/react";
+import { prisma } from "@/lib/prisma";
+import { isServiceEnabled } from "@/lib/services/vendor-services";
 
 const FOCUS =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -20,6 +22,13 @@ export default async function DashboardLayout({
 
   const user = session.user;
   const initial = user?.name?.[0]?.toUpperCase() ?? "V";
+
+  // La navigation suit les services activés par la boutique. Sans profil
+  // vendeur, ou si la lecture échoue, elle reste celle d'origine.
+  const vendor = await prisma.vendor
+    .findUnique({ where: { userId: user.id }, select: { returnsMLEnabled: true } })
+    .catch(() => null);
+  const services = { returnsML: vendor ? isServiceEnabled(vendor, "returnsML") : true };
 
   const sidebar = (
     <>
@@ -36,7 +45,7 @@ export default async function DashboardLayout({
         <p className="mt-2 text-[10.5px] text-faint">Espace vendeur</p>
       </div>
 
-      <DashboardNav isAdmin={user?.role === "ADMIN"} />
+      <DashboardNav isAdmin={user?.role === "ADMIN"} services={services} />
 
       <div className="mt-auto border-t border-line px-4 py-3">
         <div className="mb-3 flex items-center gap-2.5">

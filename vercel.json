@@ -4,6 +4,8 @@
   "regions": ["fra1"],
 
   "crons": [
-    { "path": "/api/cron/retry-ml", "schedule": "0 0 * * *" }
+    { "path": "/api/cron/retry-ml", "schedule": "0 0 * * *" },
+    { "path": "/api/cron/order-polling", "schedule": "15 0 * * *" },
+    { "path": "/api/cron/order-notifications", "schedule": "30 0 * * *" }
   ]
 }

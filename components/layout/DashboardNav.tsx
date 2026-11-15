@@ -2,14 +2,29 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, Inbox, Key, LayoutDashboard, ShieldCheck, Table2 } from "lucide-react";
+import {
+  BarChart3,
+  FileText,
+  Inbox,
+  Key,
+  LayoutDashboard,
+  ShieldCheck,
+  SlidersHorizontal,
+  Table2,
+  Truck,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { SITE_LINKS } from "@/components/layout/siteLinks";
 
 const FOCUS =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 
-const NAV_LINKS = [
+// La navigation suit les services activés par la boutique. Les liens marqués
+// `service: "returnsML"` n'apparaissent que si Retours-ML est activé. Ceux du
+// suivi restent toujours visibles : sa page sert aussi à l'activer.
+type NavService = "returnsML";
+
+const NAV_LINKS: NavItem[] = [
   {
     href: "/dashboard",
     label: "Tableau de bord",
@@ -23,7 +38,19 @@ const NAV_LINKS = [
     sublabel: "Vos règles",
     Icon: FileText,
     exact: false,
+    service: "returnsML",
   },
+  {
+    href: "/dashboard/claims",
+    label: "Réclamations",
+    sublabel: "Demandes clients",
+    Icon: Inbox,
+    exact: false,
+    service: "returnsML",
+  },
+];
+
+const INTEGRATION_LINKS: NavItem[] = [
   {
     href: "/dashboard/api-keys",
     label: "Clés API",
@@ -32,21 +59,29 @@ const NAV_LINKS = [
     exact: false,
   },
   {
-    href: "/dashboard/claims",
-    label: "Réclamations",
-    sublabel: "Demandes clients",
-    Icon: Inbox,
+    href: "/dashboard/order-tracking",
+    label: "Suivi des commandes",
+    sublabel: "Statuts et notifications",
+    Icon: Truck,
+    exact: false,
+  },
+  {
+    href: "/dashboard/services",
+    label: "Services",
+    sublabel: "Activer ou désactiver",
+    Icon: SlidersHorizontal,
     exact: false,
   },
 ];
 
-const ANALYTICS_LINKS = [
+const ANALYTICS_LINKS: NavItem[] = [
   {
     href: "/dashboard/analytics/products",
     label: "Retours produits",
     sublabel: "Motifs et problèmes récurrents",
     Icon: BarChart3,
     exact: false,
+    service: "returnsML",
   },
   {
     href: "/dashboard/analytics/returns",
@@ -54,6 +89,7 @@ const ANALYTICS_LINKS = [
     sublabel: "Par produit, motif ou client",
     Icon: Table2,
     exact: false,
+    service: "returnsML",
   },
 ];
 
@@ -63,6 +99,7 @@ type NavItem = {
   sublabel: string;
   Icon: LucideIcon;
   exact: boolean;
+  service?: NavService;
 };
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {
@@ -95,11 +132,23 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
-export function DashboardNav({ isAdmin }: { isAdmin: boolean }) {
+export function DashboardNav({
+  isAdmin,
+  services = { returnsML: true },
+}: {
+  isAdmin: boolean;
+  /** Services activés par la boutique. Défaut : la navigation d'origine. */
+  services?: Record<NavService, boolean>;
+}) {
   const pathname = usePathname();
 
   const isActive = (href: string, exact: boolean) =>
     exact ? pathname === href : pathname === href || pathname.startsWith(href + "/");
+
+  const visible = (items: NavItem[]) =>
+    items.filter((item) => !item.service || services[item.service]);
+
+  const analyticsLinks = visible(ANALYTICS_LINKS);
 
   return (
     <nav aria-label="Navigation principale" className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-4">
@@ -107,17 +156,29 @@ export function DashboardNav({ isAdmin }: { isAdmin: boolean }) {
         Menu
       </p>
 
-      {NAV_LINKS.map((item) => (
+      {visible(NAV_LINKS).map((item) => (
         <NavLink key={item.href} item={item} active={isActive(item.href, item.exact)} />
       ))}
 
       <p className="mb-2 mt-4 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
-        Analyses et statistiques
+        Intégration
       </p>
 
-      {ANALYTICS_LINKS.map((item) => (
+      {INTEGRATION_LINKS.map((item) => (
         <NavLink key={item.href} item={item} active={isActive(item.href, item.exact)} />
       ))}
+
+      {analyticsLinks.length > 0 && (
+        <>
+          <p className="mb-2 mt-4 px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+            Analyses et statistiques
+          </p>
+
+          {analyticsLinks.map((item) => (
+            <NavLink key={item.href} item={item} active={isActive(item.href, item.exact)} />
+          ))}
+        </>
+      )}
 
       {isAdmin && (
         <>

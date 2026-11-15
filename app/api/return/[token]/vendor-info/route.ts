@@ -10,6 +10,7 @@ import { prisma }           from '@/lib/prisma'
 import { checkRateLimit }   from '@/lib/rate-limit'
 import { buildReturnForm }  from '@/lib/services/return-form-builder'
 import { log }              from '@/lib/logger'
+import { isServiceEnabled } from '@/lib/services/vendor-services'
 
 // ── Masquage PII ──────────────────────────────────────────────────────────
 function maskEmail(email: string | null | undefined): string {
@@ -77,6 +78,13 @@ export async function GET(
   if (apiKey.vendor.status !== 'APPROVED') {
     return NextResponse.json(
       { valid: false, companyName: '', error: "Ce compte vendeur n'est pas encore approuvé." },
+      { status: 403 }
+    )
+  }
+
+  if (!isServiceEnabled(apiKey.vendor, 'returnsML')) {
+    return NextResponse.json(
+      { valid: false, companyName: '', error: 'Le service de retours de cette boutique est désactivé.' },
       { status: 403 }
     )
   }

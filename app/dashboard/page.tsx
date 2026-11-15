@@ -33,8 +33,11 @@ import {
   Key,
   Shield,
   ShieldAlert,
+  SlidersHorizontal,
+  Truck,
   XCircle,
 } from "lucide-react";
+import { enabledServices } from "@/lib/services/vendor-services";
 
 export default async function DashboardPage() {
   const session = await getSessionServer();
@@ -95,6 +98,28 @@ export default async function DashboardPage() {
   }
 
   if (!vendor) redirect("/auth/register");
+
+  // ── Services activés ──
+  // Chaque bloc du tableau de bord appartient à un service et ne s'affiche que
+  // si la boutique l'a activé. Les deux blocs sont indépendants.
+  const services = enabledServices(vendor);
+
+  const tracking =
+    vendor.status === "APPROVED" && services.orderTracking
+      ? await Promise.all([
+          prisma.order.count({ where: { vendorId: vendor.id } }),
+          prisma.order.count({
+            where: { vendorId: vendor.id, status: { in: ["SHIPPED", "OUT_FOR_DELIVERY"] } },
+          }),
+          prisma.order.count({ where: { vendorId: vendor.id, status: "UNMAPPED" } }),
+          prisma.notificationJob.count({ where: { vendorId: vendor.id, status: "SENT" } }),
+        ]).then(([orders, inTransit, unmapped, notificationsSent]) => ({
+          orders,
+          inTransit,
+          unmapped,
+          notificationsSent,
+        }))
+      : null;
 
   // ── Métriques ──
   const allClaims = vendor.claims;
@@ -198,8 +223,77 @@ export default async function DashboardPage() {
         </div>
       )}
 
-      {/* ── Tableau de bord actif ── */}
-      {vendor.status === "APPROVED" && (
+      {/* ── Aucun service activé ── */}
+      {vendor.status === "APPROVED" && !services.returnsML && !services.orderTracking && (
+        <Notice
+          icon={SlidersHorizontal}
+          title="Aucun service n’est activé"
+          action={
+            <Link href="/dashboard/services" className={BTN_PRIMARY}>
+              Choisir mes services
+            </Link>
+          }
+        >
+          Activez le suivi des commandes, Retours-ML, ou les deux. Chaque service fonctionne
+          seul.
+        </Notice>
+      )}
+
+      {/* ── Suivi des commandes ── */}
+      {tracking && (
+        <div className={`space-y-4 ${services.returnsML ? "mb-8" : ""}`}>
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <StatTile label="Commandes suivies" value={tracking.orders} icon={Truck} />
+            <StatTile
+              label="En cours d’acheminement"
+              value={tracking.inTransit}
+              tone={tracking.inTransit > 0 ? "brand" : "neutral"}
+            />
+            <StatTile
+              label="Clients prévenus"
+              value={tracking.notificationsSent}
+              tone={tracking.notificationsSent > 0 ? "positive" : "neutral"}
+            />
+            <StatTile
+              label="Statuts non reconnus"
+              value={tracking.unmapped}
+              tone={tracking.unmapped > 0 ? "warning" : "neutral"}
+              hint={tracking.unmapped > 0 ? "À associer" : "Rien à associer"}
+            />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <NavCard
+              href="/dashboard/order-tracking"
+              icon={Truck}
+              title="Suivi des commandes"
+              hint="Intégration, statuts et notifications"
+              badge={tracking.unmapped}
+            />
+            {!services.returnsML && (
+              <>
+                <NavCard
+                  href="/dashboard/api-keys"
+                  icon={Key}
+                  title="Clés API"
+                  hint={`${vendor.apiKeys.length} clé${vendor.apiKeys.length !== 1 ? "s" : ""} active${
+                    vendor.apiKeys.length !== 1 ? "s" : ""
+                  } sur 5`}
+                />
+                <NavCard
+                  href="/dashboard/services"
+                  icon={SlidersHorizontal}
+                  title="Services"
+                  hint="Activer ou désactiver"
+                />
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Retours-ML ── */}
+      {vendor.status === "APPROVED" && services.returnsML && (
         <div className="space-y-8">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatTile label="Réclamations" value={totalClaims} />

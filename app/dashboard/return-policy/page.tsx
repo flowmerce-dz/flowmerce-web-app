@@ -243,7 +243,7 @@ export default function ReturnPolicyPage() {
 
   return (
     <div>
-      <VendorAccessGuard />
+      <VendorAccessGuard service="returnsML" />
 
       {/* ── En-tête de page ── */}
       <div className="px-4 pt-4 sm:px-8 sm:pt-8">

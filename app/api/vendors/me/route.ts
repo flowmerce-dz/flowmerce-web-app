@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { enabledServices } from "@/lib/services/vendor-services";
 
 /**
  * GET /api/vendors/me
@@ -21,6 +22,8 @@ export async function GET() {
       status: true,
       rejectionReason: true,
       requestedDocuments: true,
+      returnsMLEnabled: true,
+      orderTrackingEnabled: true,
     },
   });
 
@@ -42,5 +45,14 @@ export async function GET() {
       vendor.status === "PENDING" ||
       vendor.status === "DOCUMENTS_REQUESTED";
 
-  return NextResponse.json({ ...vendor, isAdmin: user?.role === "ADMIN", isSuspended, isBlocked });
+  const { returnsMLEnabled, orderTrackingEnabled, ...profile } = vendor;
+
+  return NextResponse.json({
+    ...profile,
+    isAdmin: user?.role === "ADMIN",
+    isSuspended,
+    isBlocked,
+    // Services activés — lus par VendorAccessGuard.
+    services: enabledServices({ returnsMLEnabled, orderTrackingEnabled }),
+  });
 }

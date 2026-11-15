@@ -36,7 +36,7 @@ function monthLabel(month: string): string {
 }
 
 export default async function ProductReturnsAnalyticsPage() {
-  await checkVendorAccess()
+  await checkVendorAccess({ service: 'returnsML' })
   const session = await getSessionServer()
   if (!session) redirect('/auth/login')
 
