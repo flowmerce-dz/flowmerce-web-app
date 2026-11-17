@@ -8,6 +8,7 @@ import {
   extractReturnReason,
   lastMonths,
   productKey,
+  shareSegments,
   type ProductReturnRow,
 } from '@/lib/services/product-returns'
 
@@ -142,5 +143,26 @@ describe('aggregateProductReturns', () => {
     expect(result.totalReturns).toBe(0)
     expect(result.products).toEqual([])
     expect(result.months).toHaveLength(6)
+  })
+})
+
+describe('shareSegments', () => {
+  const p = (name: string, returns: number) => ({ productKey: name.toLowerCase(), productName: name, returns })
+
+  it('garde les 4 premiers produits et regroupe le reste', () => {
+    const segments = shareSegments([p('A', 5), p('B', 2), p('C', 1), p('D', 1), p('E', 1)])
+    expect(segments.map(s => [s.label, s.count, s.rank])).toEqual([
+      ['A', 5, 1], ['B', 2, 2], ['C', 1, 3], ['D', 1, 4], ['Autres produits (1)', 1, null],
+    ])
+    expect(segments[0].share).toBe(0.5)
+    expect(segments.reduce((sum, s) => sum + s.share, 0)).toBeCloseTo(1)
+  })
+
+  it('n\'ajoute pas de segment « Autres » quand tout tient', () => {
+    expect(shareSegments([p('A', 3), p('B', 1)]).map(s => s.key)).toEqual(['a', 'b'])
+  })
+
+  it('renvoie une liste vide sans retour', () => {
+    expect(shareSegments([])).toEqual([])
   })
 })

@@ -201,6 +201,61 @@ export function aggregateProductReturns(
 }
 
 // ─────────────────────────────────────────────────────────────
+// Répartition (graphique circulaire)
+// ─────────────────────────────────────────────────────────────
+
+/** Produits affichés individuellement ; les suivants sont regroupés. */
+export const TOP_PRODUCTS_SHOWN = 4
+
+export interface ShareSegment {
+  /** Clé produit, ou `'__other__'` pour le regroupement. */
+  key:   string
+  label: string
+  count: number
+  /** Part des retours avec un produit identifié, entre 0 et 1. */
+  share: number
+  /** Rang 1..TOP_PRODUCTS_SHOWN, ou `null` pour « Autres produits ». */
+  rank:  number | null
+}
+
+/**
+ * Les `top` produits les plus retournés, puis un segment « Autres produits »
+ * pour le reste. Au-delà de quelques parts, un cercle ne se lit plus : la
+ * suite du classement est dans le tableau.
+ *
+ * `products` doit être trié du plus retourné au moins retourné, comme le
+ * renvoie aggregateProductReturns.
+ */
+export function shareSegments(
+  products: readonly Pick<ProductReturnStats, 'productKey' | 'productName' | 'returns'>[],
+  top = TOP_PRODUCTS_SHOWN,
+): ShareSegment[] {
+  const total = products.reduce((sum, p) => sum + p.returns, 0)
+  if (total === 0) return []
+
+  const segments: ShareSegment[] = products.slice(0, top).map((p, i) => ({
+    key:   p.productKey,
+    label: p.productName,
+    count: p.returns,
+    share: p.returns / total,
+    rank:  i + 1,
+  }))
+
+  const rest = products.slice(top)
+  if (rest.length > 0) {
+    const count = rest.reduce((sum, p) => sum + p.returns, 0)
+    segments.push({
+      key:   '__other__',
+      label: `Autres produits (${rest.length})`,
+      count,
+      share: count / total,
+      rank:  null,
+    })
+  }
+  return segments
+}
+
+// ─────────────────────────────────────────────────────────────
 // Lecture en base
 // ─────────────────────────────────────────────────────────────
 
