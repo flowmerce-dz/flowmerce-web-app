@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, Inbox, Key, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { BarChart3, FileText, Inbox, Key, LayoutDashboard, ShieldCheck, Users } from "lucide-react";
 import { SITE_LINKS } from "@/components/layout/siteLinks";
 
 const FOCUS =
@@ -35,6 +35,13 @@ const NAV_LINKS = [
     label: "Réclamations",
     sublabel: "Demandes clients",
     Icon: Inbox,
+    exact: false,
+  },
+  {
+    href: "/dashboard/customers",
+    label: "Clients",
+    sublabel: "Historique et risque",
+    Icon: Users,
     exact: false,
   },
   {
