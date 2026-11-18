@@ -1,4 +1,16 @@
 // app/api/claims/[claimId]/route.ts — Flowmerce
+//
+// Décision d'un vendeur (ou d'un admin) sur une réclamation.
+//
+// Intégrité de la décision (audit RedStone RS-01) :
+//   · machine à états (lib/claim-transitions.ts) — une réclamation approuvée
+//     ou refusée ne change plus de décision ;
+//   · cohérence statut / résolution, et résolution contrôlée par la politique
+//     de retour et la demande du client ;
+//   · verrou optimiste — l'écriture n'a lieu que si le statut lu est toujours
+//     celui en base ; sinon 409, sans écraser la décision concurrente ;
+//   · historique en ajout seul (ClaimDecisionEvent), écrit dans la même
+//     transaction que le changement de statut.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma }                    from '@/lib/prisma'
@@ -7,6 +19,8 @@ import { getSessionServer }          from '@/lib/getSession'
 import { notifyCustomer }            from '@/lib/services/notification'
 import { log }                       from '@/lib/logger'
 import { VENDOR_DECISIONS, isVendorDecision, type VendorDecision } from '@/lib/constants'
+import { checkVendorDecision }       from '@/lib/claim-transitions'
+import { recordDecisionEvent }       from '@/lib/services/claim-history'
 
 const ALLOWED_STATUSES = ['APPROVED', 'REJECTED', 'IN_PROGRESS'] as const
 type AllowedStatus = (typeof ALLOWED_STATUSES)[number]
@@ -46,7 +60,7 @@ export async function PATCH(
   }
 
   if (!isAdmin) {
-    const vendor = await prisma.vendor.findUnique({ where: { userId: user.id } })
+    const vendor = await prisma.vendor.findUnique({ where: { userId: user.id }, select: { id: true } })
     if (!vendor || vendor.id !== claim.vendorId) {
       return NextResponse.json({ error: 'Accès non autorisé' }, { status: 403 })
     }
@@ -83,6 +97,29 @@ export async function PATCH(
   const decision = body.aiDecision as VendorDecision | undefined
   const note     = body.note?.trim() || body.overrideNote?.trim() || null
 
+  const returnPolicy = await prisma.returnPolicy.findUnique({
+    where:  { vendorId: claim.vendorId },
+    select: { acceptedTypes: true },
+  })
+
+  const rejection = checkVendorDecision({
+    from:            claim.status,
+    to:              newStatus as AllowedStatus,
+    decision,
+    currentDecision: claim.aiDecision,
+    requestedType:   claim.type,
+    acceptedTypes:   returnPolicy?.acceptedTypes,
+  })
+  if (rejection) {
+    log.warn('claims.decision_refused', {
+      claimId, code: rejection.code, from: claim.status, to: newStatus, decision: decision ?? null,
+    })
+    return NextResponse.json(
+      { error: rejection.message, code: rejection.code },
+      { status: rejection.status },
+    )
+  }
+
   // Une décision qui diverge de la reco ML est un override vendeur : on le trace
   // dans `prediction.override`, la forme que lisent les deux pages dashboard
   // (badge « Modifiée manuellement » + note de révision).
@@ -117,25 +154,61 @@ export async function PATCH(
   // écrite par le modèle : dans ce cas l'origine reste MODEL, et la réclamation
   // n'entrera pas dans le dataset d'entraînement.
   const humanGroundTruth = !!decision
-  const updated = await prisma.claim.update({
-    where: { id: claimId },
-    data:  {
-      status:      newStatus as AllowedStatus,
-      processedAt: new Date(),
-      prediction:  updatedPrediction,
-      // Colonne `aiDecision` = décision effective sur la réclamation (reco ML
-      // à la création, puis choix du vendeur s'il tranche autrement).
-      ...(decision ? { aiDecision: decision } : {}),
-      ...(humanGroundTruth
-        ? {
-            resolutionSource: 'HUMAN' as const,
-            resolvedBy:       user.email ?? user.id,
-            resolvedAt:       new Date(),
-          }
-        : {}),
-    },
-    select: { id: true, status: true, processedAt: true },
+  const now = new Date()
+  const actor = user.email ?? user.id
+
+  // Verrou optimiste : la mise à jour est conditionnée au statut lu plus haut.
+  // Deux décisions simultanées ne peuvent pas s'écraser : la seconde ne trouve
+  // plus la réclamation dans son état d'origine et reçoit un 409.
+  const updated = await prisma.$transaction(async (tx) => {
+    const { count } = await tx.claim.updateMany({
+      where: { id: claimId, status: claim.status },
+      data:  {
+        status:      newStatus as AllowedStatus,
+        processedAt: now,
+        prediction:  updatedPrediction,
+        // Colonne `aiDecision` = décision effective sur la réclamation (reco ML
+        // à la création, puis choix du vendeur s'il tranche autrement).
+        ...(decision ? { aiDecision: decision } : {}),
+        ...(humanGroundTruth
+          ? {
+              resolutionSource: 'HUMAN' as const,
+              resolvedBy:       actor,
+              resolvedAt:       now,
+            }
+          : {}),
+      },
+    })
+    if (count === 0) return null
+
+    await recordDecisionEvent(tx, {
+      claimId,
+      previousStatus:   claim.status,
+      newStatus:        newStatus as AllowedStatus,
+      previousDecision: claim.aiDecision,
+      newDecision:      decision ?? claim.aiDecision,
+      actorType:        isAdmin ? 'ADMIN' : 'VENDOR',
+      actor,
+      origin:           'dashboard',
+      reason:           note,
+    })
+
+    return tx.claim.findUnique({
+      where:  { id: claimId },
+      select: { id: true, status: true, processedAt: true },
+    })
   })
+
+  if (!updated) {
+    log.warn('claims.decision_conflict', { claimId, from: claim.status, to: newStatus })
+    return NextResponse.json(
+      {
+        error: 'Cette réclamation vient d’être modifiée par ailleurs. Rechargez la page pour voir sa décision.',
+        code:  'CONCURRENT_UPDATE',
+      },
+      { status: 409 },
+    )
+  }
 
   // Décision notifiée : priorité au choix du vendeur, sinon celle déjà sur le claim
   const finalDecision = (decision ?? claim.aiDecision) as VendorDecision | null

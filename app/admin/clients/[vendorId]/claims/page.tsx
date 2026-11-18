@@ -53,6 +53,8 @@ export default async function AdminVendorClaimsPage({
       type: true,
       status: true,
       aiScore: true,
+      aiDecision: true,
+      policyRejected: true,
       createdAt: true,
     },
   });

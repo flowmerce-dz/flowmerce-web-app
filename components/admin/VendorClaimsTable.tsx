@@ -1,4 +1,6 @@
 import { CLAIM_STATUS_LABELS, formatClaimType, formatDate } from "@/lib/utils";
+import { VENDOR_DECISION_LABELS, type VendorDecision } from "@/lib/constants";
+import { AmendDecision } from "@/components/claims/AmendDecision";
 import { XCircle } from "lucide-react";
 
 /**
@@ -7,6 +9,9 @@ import { XCircle } from "lucide-react";
  * Partagé par la fiche client (les 5 dernières) et la page dédiée
  * (`/admin/clients/[vendorId]/claims`, paginée) : les deux affichaient sinon
  * les mêmes six colonnes, à deux endroits, avec deux barèmes de score.
+ *
+ * Une réclamation déjà tranchée ne change plus de décision côté vendeur : la
+ * colonne Action permet à l'admin de la corriger, motif à l'appui (audit RS-01).
  */
 
 export type VendorClaimRow = {
@@ -17,6 +22,8 @@ export type VendorClaimRow = {
   type: string | null;
   status: string;
   aiScore: number | null;
+  aiDecision: string | null;
+  policyRejected: boolean;
   createdAt: Date;
 };
 
@@ -44,6 +51,7 @@ export function VendorClaimsTable({ claims }: { claims: VendorClaimRow[] }) {
             <th className={TH}>Statut</th>
             <th className={TH}>Score IA</th>
             <th className={TH}>Date</th>
+            <th className={TH}>Action</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
@@ -72,6 +80,11 @@ export function VendorClaimsTable({ claims }: { claims: VendorClaimRow[] }) {
                   {CLAIM_STATUS_LABELS[claim.status as keyof typeof CLAIM_STATUS_LABELS] ??
                     claim.status}
                 </span>
+                {claim.aiDecision && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    {VENDOR_DECISION_LABELS[claim.aiDecision as VendorDecision] ?? claim.aiDecision}
+                  </p>
+                )}
               </td>
               <td className="px-4 sm:px-6 py-3.5">
                 <AiScore score={claim.aiScore} />
@@ -80,6 +93,13 @@ export function VendorClaimsTable({ claims }: { claims: VendorClaimRow[] }) {
                 <p className="text-xs text-gray-400 whitespace-nowrap">
                   {formatDate(claim.createdAt)}
                 </p>
+              </td>
+              <td className="px-4 sm:px-6 py-3.5">
+                {!claim.policyRejected && (claim.status === "APPROVED" || claim.status === "REJECTED") ? (
+                  <AmendDecision claimId={claim.id} currentDecision={claim.aiDecision} />
+                ) : (
+                  <span className="text-xs text-gray-300">—</span>
+                )}
               </td>
             </tr>
           ))}
