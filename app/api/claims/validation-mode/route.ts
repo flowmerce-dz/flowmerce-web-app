@@ -10,6 +10,7 @@ import { getSessionServer }          from '@/lib/getSession'
 import { notifyCustomer }            from '@/lib/services/notification'
 import { log }                       from '@/lib/logger'
 import { isAIDecision }              from '@/lib/constants'
+import { recordDecisionEvent }       from '@/lib/services/claim-history'
 
 export async function PATCH(req: NextRequest) {
   const session = await getSessionServer()
@@ -81,19 +82,37 @@ export async function PATCH(req: NextRequest) {
           if (!isAIDecision(claim.aiDecision) || claim.aiDecision === 'Reject') return
           const decision = claim.aiDecision
 
-          await prisma.claim.update({
-            where: { id: claim.id },
-            data: {
-              status:      'APPROVED',
-              processedAt: now,
-              aiDecision:  decision,
-              prediction: {
-                ...(claim.prediction as object ?? {}),
-                autoApprovedAt: now.toISOString(),
-                autoApprovedBy: isAdmin ? 'admin' : 'vendor',
+          // Transition conditionnelle + historique dans la même transaction :
+          // une réclamation tranchée entre-temps (par le vendeur, ou par une
+          // autre bascule) n'est ni réécrite ni renotifiée.
+          const applied = await prisma.$transaction(async (tx) => {
+            const { count } = await tx.claim.updateMany({
+              where: { id: claim.id, status: 'PENDING' },
+              data: {
+                status:      'APPROVED',
+                processedAt: now,
+                aiDecision:  decision,
+                prediction: {
+                  ...(claim.prediction as object ?? {}),
+                  autoApprovedAt: now.toISOString(),
+                  autoApprovedBy: isAdmin ? 'admin' : 'vendor',
+                },
               },
-            },
+            })
+            if (count === 0) return false
+            await recordDecisionEvent(tx, {
+              claimId:          claim.id,
+              previousStatus:   'PENDING',
+              newStatus:        'APPROVED',
+              previousDecision: claim.aiDecision,
+              newDecision:      decision,
+              actorType:        isAdmin ? 'ADMIN' : 'VENDOR',
+              actor:            user.email ?? user.id,
+              origin:           'validation_mode',
+            })
+            return true
           })
+          if (!applied) return
 
           notifyCustomer({
             customerName:  claim.customerName,

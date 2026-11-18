@@ -128,10 +128,12 @@ describe('ingestClaim', () => {
     mockPrisma.$transaction.mockImplementation(async (cb: any) => {
       const tx = {
         claim: {
+          updateMany: mockPrisma.claim.updateMany,
           findFirst: vi.fn().mockResolvedValue(null),
           create: vi.fn().mockResolvedValue(mockClaim),
         },
         customerFraudRecord: { update: vi.fn() },
+        claimDecisionEvent: { create: vi.fn() },
       }
       return cb(tx)
     })
@@ -155,10 +157,12 @@ describe('ingestClaim', () => {
     mockPrisma.$transaction.mockImplementation(async (cb: any) => {
       const tx = {
         claim: {
+          updateMany: mockPrisma.claim.updateMany,
           findFirst: vi.fn().mockResolvedValue({ id: 'existing-claim' }),
           create: vi.fn(),
         },
         customerFraudRecord: { update: vi.fn() },
+        claimDecisionEvent: { create: vi.fn() },
       }
       return cb(tx)
     })
@@ -180,6 +184,7 @@ describe('ingestClaim', () => {
       mockPrisma.$transaction.mockImplementation(async (cb: any) => {
         const tx = {
           claim: {
+          updateMany: mockPrisma.claim.updateMany,
             findFirst: vi.fn().mockResolvedValue(null),
             // La claim créée reflète les données envoyées — notamment `type`,
             // que la décision relit depuis la ligne persistée (et non depuis
@@ -190,6 +195,7 @@ describe('ingestClaim', () => {
             })),
           },
           customerFraudRecord: { update: vi.fn() },
+        claimDecisionEvent: { create: vi.fn() },
         }
         return cb(tx)
       })
