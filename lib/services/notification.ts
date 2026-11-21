@@ -14,7 +14,15 @@ import path       from 'path'
 import fs         from 'fs'
 import { env }    from '@/lib/env'
 import { log }    from '@/lib/logger'
-import type { VendorDecision } from '@/lib/constants'
+import { prisma } from '@/lib/prisma'
+import { isWhatsAppConfigured, sendWhatsAppTemplate } from '@/lib/whatsapp/client'
+import {
+  CLAIM_DECISION_TEMPLATE,
+  NEW_CLAIM_TEMPLATE,
+  buildDecisionParams,
+  buildNewClaimParams,
+} from '@/lib/whatsapp/claim-templates'
+import type { ClaimTypeValue, VendorDecision } from '@/lib/constants'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -298,8 +306,68 @@ async function sendEmail(p: NotificationPayload): Promise<boolean> {
   }
 }
 
+// ── WhatsApp ──────────────────────────────────────────────────────────────────
+// Modèles approuvés chez Meta : lib/whatsapp/claim-templates.ts. Un envoi
+// WhatsApp ne remplace jamais l'e-mail et n'en dépend pas.
+
+async function sendDecisionWhatsApp(p: NotificationPayload): Promise<void> {
+  // Seule une décision rendue est annoncée : « en cours » n'a pas de modèle.
+  if (p.status !== 'APPROVED' && p.status !== 'REJECTED') return
+  if (!p.customerPhone || !isWhatsAppConfigured()) return
+
+  await sendWhatsAppTemplate({
+    to:         p.customerPhone,
+    template:   CLAIM_DECISION_TEMPLATE.name,
+    language:   CLAIM_DECISION_TEMPLATE.language,
+    bodyParams: buildDecisionParams({
+      customerName: p.customerName,
+      orderId:      p.orderId,
+      status:       p.status,
+      decision:     p.aiDecision ?? null,
+    }),
+  })
+}
+
 // ── Entrée publique ───────────────────────────────────────────────────────────
 
 export async function notifyCustomer(payload: NotificationPayload): Promise<void> {
-  await sendEmail(payload)
+  const [, whatsapp] = await Promise.allSettled([sendEmail(payload), sendDecisionWhatsApp(payload)])
+  if (whatsapp.status === 'rejected') {
+    log.error('notification.whatsapp_error', { err: String(whatsapp.reason) })
+  }
+}
+
+/**
+ * Prévient le vendeur d'une nouvelle réclamation (WhatsApp `nouvelle_reclamation`).
+ * Au mieux : ne lève jamais, la création de la réclamation n'en dépend pas.
+ */
+export async function notifyVendorNewClaim(c: {
+  claimId:       string
+  vendorId:      string
+  orderId:       string
+  customerName:  string
+  returnReason?: string | null
+  type?:         ClaimTypeValue | null
+}): Promise<void> {
+  if (!isWhatsAppConfigured()) return
+
+  try {
+    const vendor = await prisma.vendor.findUnique({
+      where:  { id: c.vendorId },
+      select: { phone: true },
+    })
+    if (!vendor?.phone) {
+      log.warn('notification.vendor_phone_missing', { claimId: c.claimId, vendorId: c.vendorId })
+      return
+    }
+
+    await sendWhatsAppTemplate({
+      to:         vendor.phone,
+      template:   NEW_CLAIM_TEMPLATE.name,
+      language:   NEW_CLAIM_TEMPLATE.language,
+      bodyParams: buildNewClaimParams(c),
+    })
+  } catch (err) {
+    log.error('notification.vendor_whatsapp_error', { claimId: c.claimId, err: String(err) })
+  }
 }

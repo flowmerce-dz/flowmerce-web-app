@@ -1,5 +1,10 @@
 import { z } from 'zod'
 
+const optionalNonEmpty = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().min(1).optional(),
+)
+
 const ServerSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -28,6 +33,14 @@ const ServerSchema = z.object({
   GMAIL_APP_PASSWORD: z
     .string()
     .min(16, "GMAIL_APP_PASSWORD must be at least 16 characters"),
+
+  // WhatsApp Cloud API (lib/whatsapp/client.ts). Facultatives : sans elles,
+  // aucune notification WhatsApp ne part, et l'e-mail reste seul. Une valeur
+  // vide vaut absence : elle ne doit jamais empêcher l'application de démarrer.
+  WHATSAPP_PHONE_NUMBER_ID:     optionalNonEmpty,
+  WHATSAPP_ACCESS_TOKEN:        optionalNonEmpty,
+  // Compte WhatsApp Business : lecture des modèles, inutile pour l'envoi.
+  WHATSAPP_BUSINESS_ACCOUNT_ID: optionalNonEmpty,
 });
 
 const ClientSchema = z.object({

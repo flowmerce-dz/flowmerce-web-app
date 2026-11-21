@@ -110,7 +110,11 @@ vi.mock('@/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('@/lib/fraud-score', () => mockFraudScore)
 vi.mock('@/lib/services/ml', () => mockML)
 vi.mock('@/lib/services/return-policy', () => mockReturnPolicy)
-vi.mock('@/lib/services/notification', () => ({ notifyCustomer: vi.fn().mockResolvedValue(undefined) }))
+const mockNotification = {
+  notifyCustomer:       vi.fn().mockResolvedValue(undefined),
+  notifyVendorNewClaim: vi.fn().mockResolvedValue(undefined),
+}
+vi.mock('@/lib/services/notification', () => mockNotification)
 vi.mock('@/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 
 describe('ingestClaim', () => {
@@ -148,6 +152,82 @@ describe('ingestClaim', () => {
       expect(result.claim.autoApproved).toBe(false)
       expect(result.claim.autoRejected).toBe(false)
     }
+  })
+
+  describe('notification WhatsApp du vendeur', () => {
+    function stubCreation(created: Record<string, unknown>) {
+      mockFraudScore.findOrCreateFraudRecord.mockResolvedValue({ record: mockFraudRecord, matchedBy: 'email' })
+      mockFraudScore.computeFraudScore.mockReturnValue(0)
+      mockPrisma.$transaction.mockImplementation(async (cb: any) =>
+        cb({
+          claim: {
+            updateMany: mockPrisma.claim.updateMany,
+            findFirst:  vi.fn().mockResolvedValue(null),
+            create:     vi.fn().mockResolvedValue(created),
+          },
+          customerFraudRecord: { update: vi.fn() },
+          claimDecisionEvent:  { create: vi.fn() },
+        }),
+      )
+    }
+
+    it('prévient le vendeur à la création, avec le motif lu dans mlInput', async () => {
+      stubCreation({ ...mockClaim, mlInput: { Return_Reason: 'Produit défectueux' } })
+
+      const { ingestClaim } = await import('@/lib/services/claim-ingestion')
+      await ingestClaim(baseInput)
+
+      expect(mockNotification.notifyVendorNewClaim).toHaveBeenCalledTimes(1)
+      expect(mockNotification.notifyVendorNewClaim).toHaveBeenCalledWith({
+        claimId:      'claim-1',
+        vendorId:     'vendor-1',
+        orderId:      'order-1',
+        customerName: 'Client Test',
+        returnReason: 'Produit défectueux',
+        type:         'EXCHANGE',
+      })
+    })
+
+    it('retombe sur le motif écrit dans la description', async () => {
+      stubCreation({ ...mockClaim, description: 'Motif : Mauvaise taille — Détails : trop petit' })
+
+      const { ingestClaim } = await import('@/lib/services/claim-ingestion')
+      await ingestClaim(baseInput)
+
+      expect(mockNotification.notifyVendorNewClaim.mock.calls[0][0].returnReason).toBe('Mauvaise taille')
+    })
+
+    it('sans motif reconnaissable, transmet null (le modèle retombe sur le type)', async () => {
+      stubCreation({ ...mockClaim, description: 'Rien de structuré' })
+
+      const { ingestClaim } = await import('@/lib/services/claim-ingestion')
+      await ingestClaim(baseInput)
+
+      expect(mockNotification.notifyVendorNewClaim.mock.calls[0][0].returnReason).toBeNull()
+    })
+
+    it('ne prévient pas le vendeur d’une réclamation refusée d’office (masquée pour lui)', async () => {
+      stubCreation({ ...mockClaim, status: 'REJECTED', aiDecision: 'Reject', policyRejected: true })
+
+      const { ingestClaim } = await import('@/lib/services/claim-ingestion')
+      await ingestClaim({
+        ...baseInput,
+        policyViolation: { code: 'DEADLINE', message: 'Délai dépassé', notify: true },
+      })
+
+      expect(mockNotification.notifyVendorNewClaim).not.toHaveBeenCalled()
+      expect(mockNotification.notifyCustomer).toHaveBeenCalledTimes(1)
+    })
+
+    it('un échec de la notification vendeur ne fait pas échouer la création', async () => {
+      stubCreation(mockClaim)
+      mockNotification.notifyVendorNewClaim.mockRejectedValueOnce(new Error('boom'))
+
+      const { ingestClaim } = await import('@/lib/services/claim-ingestion')
+      const result = await ingestClaim(baseInput)
+
+      expect(result.ok).toBe(true)
+    })
   })
 
   it('détecte un doublon via (vendorId, orderId)', async () => {

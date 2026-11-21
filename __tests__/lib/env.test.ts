@@ -57,6 +57,25 @@ describe('env', () => {
     expect(mod.env.NODE_ENV).toBe('development')
   })
 
+  describe('variables WhatsApp (facultatives)', () => {
+    const WA = ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_BUSINESS_ACCOUNT_ID']
+    afterEach(() => WA.forEach((k) => delete process.env[k]))
+
+    it('une valeur vide vaut absence et ne bloque pas le démarrage', async () => {
+      setEnv(validEnv())
+      WA.forEach((k) => { process.env[k] = '' })
+      const mod: EnvModule = await import('@/lib/env')
+      expect(mod.env.WHATSAPP_ACCESS_TOKEN).toBeUndefined()
+      expect(mod.env.WHATSAPP_PHONE_NUMBER_ID).toBeUndefined()
+    })
+
+    it('conserve une valeur renseignée', async () => {
+      setEnv({ ...validEnv(), WHATSAPP_PHONE_NUMBER_ID: '1481661498359966' })
+      const mod: EnvModule = await import('@/lib/env')
+      expect(mod.env.WHATSAPP_PHONE_NUMBER_ID).toBe('1481661498359966')
+    })
+  })
+
   describe('validation DATABASE_URL', () => {
     it('rejette une DATABASE_URL manquante', async () => {
       const vars = validEnv()

@@ -19,7 +19,8 @@ import {
 } from '@/lib/fraud-score'
 import { callMLPredict } from '@/lib/services/ml'
 import { applyMLDecision } from '@/lib/services/claim-decision'
-import { notifyCustomer } from '@/lib/services/notification'
+import { notifyCustomer, notifyVendorNewClaim } from '@/lib/services/notification'
+import { extractReturnReason } from '@/lib/services/product-returns'
 import { log } from '@/lib/logger'
 import type { AIDecision } from '@/lib/constants'
 
@@ -345,6 +346,19 @@ export async function ingestClaim(input: IngestClaimInput): Promise<IngestClaimR
       customerPastReturns: pastReturns,
     }
   }
+
+  // 4 ter. Le vendeur est prévenu (WhatsApp) de toute réclamation qu'il aura à
+  // voir — donc pas d'un refus d'office, qui lui est masqué. Au mieux : la
+  // création n'attend pas l'envoi et n'en dépend pas. Le motif est lu là où
+  // le reste du tableau de bord le lit (mlInput, puis la description).
+  notifyVendorNewClaim({
+    claimId:      claim.id,
+    vendorId:     input.vendor.id,
+    orderId:      claim.orderId,
+    customerName: claim.customerName,
+    returnReason: extractReturnReason(claim.mlInput, claim.description),
+    type:         claim.type,
+  }).catch((err) => log.error('claim_ingestion.vendor_notification_error', { err: String(err) }))
 
   // 5. Appel ML (si payload fourni) — sur le payload enrichi persisté en 2 bis.
   //
